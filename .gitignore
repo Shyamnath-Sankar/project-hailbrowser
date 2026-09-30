@@ -1,0 +1,23 @@
+# dependencies
+node_modules/
+
+# build output (rebuilt with `npm run build`)
+dist/
+
+# local env / secrets. API keys live in chrome.storage.local at runtime, not in
+# the repo - but never let a stray .env or key file get committed either.
+.env
+.env.*
+*.pem
+*.key
+secrets.json
+
+# editor / OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# logs
+*.log
+npm-debug.log*
