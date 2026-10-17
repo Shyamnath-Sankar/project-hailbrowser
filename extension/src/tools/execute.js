@@ -114,22 +114,32 @@ const HANDLERS = {
       [px, py] = page.toCss(tab.id, x, y);
     } else throw new Error('Give a ref or x and y.');
     await cdp.mouseClick(tab.id, px, py, { button, clickCount, modifiers: cdp.modifierMask(modifiers) });
-    await page.run(tab.id, inj.waitSettled, false).catch(() => {});
-    const now = await chrome.tabs.get(tab.id);
+    const now = await page.settleAfterInput(tab.id, tab.url);
+    if (now.url === tab.url) await page.run(tab.id, inj.waitSettled, false).catch(() => {});
     return text(`Clicked ${ref != null ? ref : `(${Math.round(px)}, ${Math.round(py)})`}. Page: ${now.title} — ${now.url}`);
   },
 
   async type({ text: value, ref, tabId, clear, submit }) {
     const tab = await page.resolveTab(tabId);
+    let info = null;
     if (ref != null) {
       const id = parseRef(ref);
       const { x, y } = await page.pointFor(tab.id, id);
       await cdp.mouseClick(tab.id, x, y);
-      await page.run(tab.id, inj.focusNode, id);
+      info = await page.run(tab.id, inj.focusNode, id);
+      if (info?.special) {
+        const res = await page.run(tab.id, inj.setNativeValue, id, value);
+        if (res?.error) throw new Error(res.error);
+        if (value && !res.value) throw new Error(`The ${info.kind} field rejected "${value}". ${page.SPECIAL_INPUT_HINT}`);
+      }
     }
-    await cdp.insertText(tab.id, value, { replace: clear ?? ref != null });
-    if (submit) await cdp.pressChord(tab.id, 'Enter');
-    await page.run(tab.id, inj.waitSettled, !submit).catch(() => {});
+    if (!info?.special) await cdp.insertText(tab.id, value, { replace: clear ?? ref != null });
+    if (submit) {
+      await cdp.pressChord(tab.id, 'Enter');
+      await page.settleAfterInput(tab.id, tab.url);
+    } else {
+      await page.run(tab.id, inj.waitSettled, !!info?.autocomplete).catch(() => {});
+    }
     return text(`Typed ${JSON.stringify(value.length > 80 ? value.slice(0, 80) + '…' : value)}${ref ? ` into ${ref}` : ''}${submit ? ' and pressed Enter' : ''}.`);
   },
 
@@ -137,7 +147,8 @@ const HANDLERS = {
     const tab = await page.resolveTab(tabId);
     const chords = String(keys).split(/\s+/).filter(Boolean);
     for (let i = 0; i < Math.min(repeat, 50); i++) for (const chord of chords) await cdp.pressChord(tab.id, chord);
-    await page.run(tab.id, inj.waitSettled, false).catch(() => {});
+    const now = await page.settleAfterInput(tab.id, tab.url, 250);
+    if (now.url === tab.url) await page.run(tab.id, inj.waitSettled, false).catch(() => {});
     return text(`Pressed ${keys}${repeat > 1 ? ` ×${repeat}` : ''}.`);
   },
 

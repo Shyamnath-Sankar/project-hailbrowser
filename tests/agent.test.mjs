@@ -178,3 +178,22 @@ test('values: label fast path, decision-model matching, NONE', async () => {
   assert.equal(fast.text, 'London');
   assert.equal(await chooseValue({ goal: 'g', action, snap, values: null, settings, decisionCfg: cfg }), null);
 });
+
+test('tasks: plan normalization and answering a blocked subtask', async () => {
+  const { normalizePlan, applyAnswer, newTask } = await import('../extension/src/agent/tasks.js');
+  const plan = normalizePlan({ subtasks: [{ title: ' Open course ', detail: 'd' }, { title: '' }, { foo: 1 }, { title: 'Lesson 1' }] });
+  assert.deepEqual(plan.map((s) => [s.title, s.status, s.attempts]), [['Open course', 'pending', 0], ['Lesson 1', 'pending', 0]]);
+  assert.equal(normalizePlan({ subtasks: Array.from({ length: 50 }, (_, i) => ({ title: `t${i}` })) }).length, 30);
+
+  const t = newTask('goal', 'tasks');
+  assert.equal(t.mode, 'normal');
+  t.subtasks = normalizePlan({ subtasks: [{ title: 'Quiz' }, { title: 'Next' }] });
+  t.subtasks[0].attempts = 2;
+  t.status = 'waiting_user';
+  t.question = 'I could not finish "Quiz"';
+  assert.equal(applyAnswer(t, ''), false);
+  assert.equal(applyAnswer(t, 'skip'), true);
+  assert.equal(t.subtasks[0].status, 'skipped');
+  assert.equal(t.status, 'running');
+  assert.match(t.notes[0], /skip/);
+});

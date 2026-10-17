@@ -4,17 +4,29 @@
 
 **An open-source browser agent that lives in your Chrome.** Chat with it in the side panel using any model you like, switch to **Ultrafast** mode for snappy form and search flows, or plug it into **Claude Code, OpenCode, Cursor, Codex** and any other MCP client so your coding agent can use your real, logged-in browser.
 
-<p align="center"><img src="docs/sidepanel.png" width="360" alt="HailBrowser side panel showing an Ultrafast run and an external agent's tool calls" /></p>
+<p align="center"><img src="docs/tasks-ask.png" width="300" alt="Tasks mode: a long job split into subtasks, paused to ask the user a question" /> <img src="docs/sidepanel.png" width="300" alt="Chat feed showing a Fast run and a coding agent's tool calls" /></p>
 
 ## What you get
 
 | | |
 |---|---|
 | **Side panel agent** | Chat with the current tab. Bring your own key: Anthropic, OpenAI, OpenRouter, Gemini, Together AI, Groq, DeepSeek, Ollama, LM Studio, or any OpenAI-compatible endpoint. |
-| **Two modes** | **Normal**: a full tool-calling agent (read page, click, type, screenshots, JS). **⚡ Ultrafast**: one decision request per step, no screenshots — inspired by [jev-ultrafast](https://github.com/browser-use/jev-ultrafast). |
+| **Three modes** | **Chat**: a full tool-calling agent (read page, click, type, screenshots, JS). **⚡ Fast**: one decision request per step, no screenshots — inspired by [jev-ultrafast](https://github.com/browser-use/jev-ultrafast). **Tasks**: long jobs (finish a course, work through a list) split into subtasks with saved progress. |
 | **MCP bridge** | `hailbrowser-mcp` exposes 18 browser tools to any MCP client. Several agents can share one browser at once. |
 | **Real browser, real input** | Uses `chrome.debugger` for trusted mouse/keyboard events and screenshots in background tabs. No `--remote-debugging-port`, no separate Chrome profile. |
 | **Visible & stoppable** | A glow shows which tab is being driven; every step appears in the side panel; one click stops a run. |
+
+## How Tasks mode works
+
+For jobs too long for one chat — completing a course, processing a list of pages — pick **Tasks**:
+
+1. **Plan**: your model splits the goal into 3–15 concrete subtasks (and can add more as it discovers them, e.g. extra lessons).
+2. **Work**: each subtask runs with a fresh, focused context: the overall goal, the plan with ✓ marks, and saved notes. Context never balloons, so it can keep going for hundreds of steps.
+3. **Remember**: the agent saves notes (progress, URLs, answers) that carry across subtasks. Progress is stored after every step, so closing the panel or a Chrome restart just pauses it — press **Resume**.
+4. **Ask**: for logins, payments, CAPTCHAs or answers it isn't sure about, it stops and asks you in the panel, then continues with your reply.
+5. **Retry**: a failed subtask is retried once with the issue noted; if it fails again it asks you how to proceed (or say "skip").
+
+Budgets (steps per subtask, total steps before checking in) are in Settings → Tasks.
 
 ## How Ultrafast works
 

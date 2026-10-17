@@ -55,8 +55,9 @@ async function act(tabId, action, snap, text) {
   }
   await cdp.mouseClick(tabId, point.x, point.y);
   if (action.kind === 'fill') {
-    await page.run(tabId, inj.focusNode, action.node);
-    await cdp.insertText(tabId, text, { replace: true });
+    const info = await page.run(tabId, inj.focusNode, action.node);
+    if (info?.special) await page.run(tabId, inj.setNativeValue, action.node, text);
+    else await cdp.insertText(tabId, text, { replace: true });
   }
 }
 

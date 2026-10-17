@@ -120,6 +120,24 @@ export async function setIndicator(tabId, on, label) {
   await run(tabId, inj.setIndicator, on, label).catch(() => {});
 }
 
+/**
+ * After an input that may navigate (click, Enter), wait briefly for navigation to
+ * start and, if it does, for the new page to load. Returns the settled tab.
+ */
+export async function settleAfterInput(tabId, beforeUrl, windowMs = 400) {
+  const started = Date.now();
+  while (Date.now() - started < windowMs) {
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    if (!tab) throw new Error('Tab was closed');
+    if (tab.status === 'loading' || (tab.pendingUrl && tab.pendingUrl !== beforeUrl)) return waitForLoad(tabId);
+    if (tab.url !== beforeUrl) return tab; // same-document navigation (SPA)
+    await sleep(50);
+  }
+  return chrome.tabs.get(tabId);
+}
+
+export const SPECIAL_INPUT_HINT = 'Use the format the browser expects, e.g. 2026-09-20 for dates, 19:30 for times, 2026-09 for months, #ff0000 for colors.';
+
 export class StaleError extends Error {}
 
 export function sleep(ms) {

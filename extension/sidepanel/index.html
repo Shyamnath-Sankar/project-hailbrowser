@@ -7,15 +7,16 @@
   <link rel="stylesheet" href="sidepanel.css" />
 </head>
 <body>
+  <div class="glow" aria-hidden="true"></div>
+
   <header class="top">
+    <img class="logo" src="../icons/icon48.png" alt="" width="26" height="26" />
     <div class="brand">
-      <img src="../icons/icon32.png" alt="" width="20" height="20" />
-      <span>HailBrowser</span>
+      <strong>HailBrowser</strong>
+      <button id="bridge" class="conn" title="Connection to Claude Code / OpenCode">
+        <span class="dot"></span><span id="bridge-label">Agents offline</span>
+      </button>
     </div>
-    <button id="bridge" class="pill" title="MCP bridge for Claude Code, OpenCode and other agents">
-      <span class="dot"></span><span id="bridge-label">MCP offline</span>
-    </button>
-    <div class="spacer"></div>
     <button id="new-chat" class="icon" title="New chat" aria-label="New chat">
       <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
     </button>
@@ -24,34 +25,32 @@
     </button>
   </header>
 
-  <div class="modebar">
-    <div class="segmented" role="tablist" aria-label="Agent mode">
-      <button role="tab" data-mode="normal" aria-selected="true">Normal</button>
-      <button role="tab" data-mode="ultrafast" aria-selected="false">⚡ Ultrafast</button>
+  <nav class="modes" role="tablist" aria-label="Mode">
+    <button role="tab" data-mode="normal" aria-selected="true">
+      <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Chat
+    </button>
+    <button role="tab" data-mode="ultrafast" aria-selected="false">
+      <svg viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>Fast
+    </button>
+    <button role="tab" data-mode="tasks" aria-selected="false">
+      <svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/></svg>Tasks
+    </button>
+  </nav>
+  <p id="mode-help" class="mode-help"></p>
+
+  <main id="feed" aria-live="polite"></main>
+
+  <footer class="composer" id="composer">
+    <div class="composer-box">
+      <textarea id="input" rows="1" placeholder="Ask or give a job…" title="Enter to send · Shift+Enter for a new line"></textarea>
+      <button id="send" class="send" title="Send" aria-label="Send">
+        <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </button>
+      <button id="stop" class="send stop" title="Stop" aria-label="Stop" hidden>
+        <svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>
+      </button>
     </div>
     <div id="model-caption" class="caption"></div>
-  </div>
-
-  <main id="feed" aria-live="polite">
-    <section id="empty" class="empty">
-      <h1>What should I do in this tab?</h1>
-      <p>HailBrowser drives your real browser with the model you choose. Use <b>Ultrafast</b> for forms and searches, <b>Normal</b> for anything open-ended.</p>
-      <div class="suggestions">
-        <button>Summarize this page in 5 bullet points</button>
-        <button>Find the pricing page and list the plans</button>
-        <button>Search Wikipedia for Gödel's incompleteness theorems and open the article</button>
-      </div>
-    </section>
-  </main>
-
-  <footer class="composer">
-    <textarea id="input" rows="1" placeholder="Describe a task…" title="Enter to send, Shift+Enter for a new line"></textarea>
-    <button id="send" class="send" title="Send" aria-label="Send">
-      <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-    </button>
-    <button id="stop" class="send stop" title="Stop" aria-label="Stop" hidden>
-      <svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
-    </button>
   </footer>
 
   <section id="settings" class="settings" hidden>
@@ -59,71 +58,79 @@
       <button id="close-settings" class="icon" aria-label="Back">
         <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>
       </button>
-      <div class="brand"><span>Settings</span></div>
-      <div class="spacer"></div>
-      <span id="saved" class="saved" hidden>Saved</span>
+      <div class="brand"><strong>Settings</strong></div>
+      <span id="saved" class="saved" hidden>Saved ✓</span>
     </header>
     <form id="settings-form" autocomplete="off">
-      <fieldset>
-        <legend>Normal agent</legend>
-        <p class="hint">A tool-calling agent: reads the page, clicks, types, takes screenshots. Works with any provider.</p>
+      <div class="card"><div class="card-in">
+        <h3>Your model</h3>
+        <p class="hint">Used by Chat and Tasks. Paste a key from your provider; it stays in this browser.</p>
         <label>Provider <select name="normal.provider" data-providers></select></label>
+        <label data-key-for="normal.provider">API key <input type="password" data-key-input="normal.provider" spellcheck="false" placeholder="Paste your API key" /></label>
         <label>Model <input name="normal.model" list="models-normal.provider" spellcheck="false" /></label>
-        <label class="check"><input type="checkbox" name="normal.vision" /> Allow screenshots (model must support images)</label>
-        <label>Max steps per task <input type="number" name="normal.maxSteps" min="5" max="200" /></label>
-      </fieldset>
+        <label class="check"><input type="checkbox" name="normal.vision" /> Let it look at screenshots</label>
+      </div></div>
 
-      <fieldset>
-        <legend>⚡ Ultrafast agent</legend>
-        <p class="hint">One decision request per step: the page becomes a numbered element table and a decision model picks an operation and a target. No screenshots.</p>
-        <label>Decision backend
+      <div class="card"><div class="card-in">
+        <h3>⚡ Fast mode</h3>
+        <p class="hint">A decision model picks one action at a time from a numbered list of what's on the page. Best for forms and searches.</p>
+        <label>Decision model type
           <select name="ultrafast.backend">
             <option value="systemone">Decision API (TypeSafe Jev or compatible)</option>
-            <option value="choice">Letter-choice model (Together Tev1)</option>
-            <option value="llm">Any LLM (single JSON call)</option>
+            <option value="choice">Letter-choice model (e.g. Together Tev1)</option>
+            <option value="llm">Any chat model (one JSON reply per step)</option>
           </select>
         </label>
         <div data-show="ultrafast.backend=systemone">
-          <label>Decision API URL <input name="ultrafast.systemoneUrl" spellcheck="false" /></label>
-          <label>Decision model <input name="ultrafast.systemoneModel" spellcheck="false" placeholder="jev-latest" /></label>
-          <label>Decision API key <input type="password" name="ultrafast.systemoneKey" spellcheck="false" placeholder="TYPESAFE_API_KEY" /></label>
+          <label>API key <input type="password" name="ultrafast.systemoneKey" spellcheck="false" placeholder="TYPESAFE_API_KEY" /></label>
+          <details><summary>Endpoint &amp; model</summary>
+            <label>URL <input name="ultrafast.systemoneUrl" spellcheck="false" /></label>
+            <label>Model <input name="ultrafast.systemoneModel" spellcheck="false" placeholder="jev-latest" /></label>
+          </details>
         </div>
         <div data-show="ultrafast.backend=choice">
-          <label>Decision provider <select name="ultrafast.choiceProvider" data-providers></select></label>
-          <label>Decision model <input name="ultrafast.choiceModel" list="models-ultrafast.choiceProvider" spellcheck="false" /></label>
-          <p class="hint">A small classifier (e.g. together/Tev1-4B-experimental) answers one letter per question. The operation and target questions run in parallel, so each step is one round trip.</p>
+          <label>Provider <select name="ultrafast.choiceProvider" data-providers></select></label>
+          <label data-key-for="ultrafast.choiceProvider">API key <input type="password" data-key-input="ultrafast.choiceProvider" spellcheck="false" placeholder="Paste your API key" /></label>
+          <label>Model <input name="ultrafast.choiceModel" list="models-ultrafast.choiceProvider" spellcheck="false" /></label>
         </div>
         <div data-show="ultrafast.backend=llm">
-          <label>Decision provider <select name="ultrafast.decisionProvider" data-providers></select></label>
-          <label>Decision model <input name="ultrafast.decisionModel" list="models-ultrafast.decisionProvider" spellcheck="false" /></label>
-          <p class="hint">Pick a fast model (Groq, Gemini Flash, Haiku). It also writes field text, so typing costs no extra call.</p>
+          <label>Provider <select name="ultrafast.decisionProvider" data-providers></select></label>
+          <label data-key-for="ultrafast.decisionProvider">API key <input type="password" data-key-input="ultrafast.decisionProvider" spellcheck="false" placeholder="Paste your API key" /></label>
+          <label>Model <input name="ultrafast.decisionModel" list="models-ultrafast.decisionProvider" spellcheck="false" /></label>
         </div>
-        <label>Text helper provider <select name="ultrafast.textProvider" data-providers></select></label>
-        <label>Text helper model <input name="ultrafast.textModel" list="models-ultrafast.textProvider" spellcheck="false" /></label>
-        <label>Max actions per task <input type="number" name="ultrafast.maxActions" min="5" max="200" /></label>
-      </fieldset>
+        <details><summary>Text helper (writes what to type)</summary>
+          <p class="hint">Not needed when an agent passes values to run_task.</p>
+          <label>Provider <select name="ultrafast.textProvider" data-providers></select></label>
+          <label data-key-for="ultrafast.textProvider">API key <input type="password" data-key-input="ultrafast.textProvider" spellcheck="false" placeholder="Paste your API key" /></label>
+          <label>Model <input name="ultrafast.textModel" list="models-ultrafast.textProvider" spellcheck="false" /></label>
+        </details>
+      </div></div>
 
-      <fieldset>
-        <legend>API keys</legend>
-        <p class="hint">Stored only in this browser (chrome.storage.local) and sent only to the provider you call.</p>
-        <div id="keys"></div>
-      </fieldset>
+      <div class="card"><div class="card-in">
+        <h3>Tasks</h3>
+        <p class="hint">Long jobs are split into subtasks. These limits keep a runaway task in check.</p>
+        <label>Steps per subtask <input type="number" name="tasks.stepsPerSubtask" min="5" max="200" /></label>
+        <label>Total steps before asking you <input type="number" name="tasks.maxTotalSteps" min="20" max="5000" /></label>
+      </div></div>
 
-      <fieldset>
-        <legend>Connect Claude Code, OpenCode &amp; others</legend>
-        <label class="check"><input type="checkbox" name="bridge.enabled" /> Allow external agents to use this browser (MCP bridge)</label>
-        <label>Bridge port <input type="number" name="bridge.port" min="1024" max="65535" /></label>
-        <p class="hint">Add the MCP server to your agent, then ask it to use the browser:</p>
+      <div class="card"><div class="card-in">
+        <h3>Connect Claude Code, OpenCode &amp; more</h3>
+        <label class="check"><input type="checkbox" name="bridge.enabled" /> Let coding agents use this browser</label>
+        <p class="hint">Add HailBrowser to your agent with one of these, then ask it to use the browser.</p>
         <div class="snippet"><span>Claude Code</span><code id="snip-claude"></code><button type="button" data-copy="snip-claude">Copy</button></div>
         <div class="snippet"><span>OpenCode (opencode.json)</span><code id="snip-opencode"></code><button type="button" data-copy="snip-opencode">Copy</button></div>
-        <div class="snippet"><span>Cursor / Windsurf / any MCP client</span><code id="snip-generic"></code><button type="button" data-copy="snip-generic">Copy</button></div>
-      </fieldset>
+        <details><summary>Other agents &amp; port</summary>
+          <div class="snippet"><span>Cursor / Windsurf / any MCP client</span><code id="snip-generic"></code><button type="button" data-copy="snip-generic">Copy</button></div>
+          <label>Port <input type="number" name="bridge.port" min="1024" max="65535" /></label>
+        </details>
+      </div></div>
 
-      <fieldset>
-        <legend>Tools &amp; safety</legend>
-        <label class="check"><input type="checkbox" name="tools.allowJavascript" /> Allow the javascript tool</label>
-        <label class="check"><input type="checkbox" name="tools.showIndicator" /> Show a glow on tabs being controlled</label>
-      </fieldset>
+      <div class="card"><div class="card-in">
+        <h3>Safety</h3>
+        <label class="check"><input type="checkbox" name="tools.showIndicator" /> Glow on tabs being controlled</label>
+        <label class="check"><input type="checkbox" name="tools.allowJavascript" /> Allow running page scripts (javascript tool)</label>
+        <details><summary>All API keys</summary><div id="keys"></div></details>
+      </div></div>
     </form>
   </section>
 

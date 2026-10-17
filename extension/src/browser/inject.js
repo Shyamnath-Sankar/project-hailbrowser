@@ -9,7 +9,9 @@
 export function pageSnapshot(opts) {
   const o = Object.assign({ viewportOnly: false, maxElements: 400, maxText: 6000 }, opts || {});
   if (!document.body) return { error: 'Page has no body yet' };
-  const H = (window.__hail ||= { ids: new WeakMap(), nodes: new Map(), next: 1 });
+  // Each document starts at a random base so a stale ref from a previous page
+  // fails loudly instead of silently matching an element on the new page.
+  const H = (window.__hail ||= { ids: new WeakMap(), nodes: new Map(), next: (100 + Math.floor(Math.random() * 900)) * 10 });
   const identity = (e) => {
     if (!H.ids.has(e)) H.ids.set(e, H.next++);
     const id = H.ids.get(e);
@@ -88,6 +90,7 @@ export function pageSnapshot(opts) {
         (['textbox', 'searchbox', 'spinbutton'].includes(rname) || (rname === 'combobox' && ['INPUT', 'TEXTAREA'].includes(e.tagName)) || e.isContentEditable);
       if (editable) el.editable = true;
       if (e.type === 'password') { el.sensitive = true; el.value = e.value ? '••••' : ''; }
+      else if (['checkbox', 'radio'].includes(e.type)) { /* state is reported as checked= */ }
       else el.value = clean('value' in e && e.tagName !== 'BUTTON' && e.tagName !== 'LI' ? e.value :
         e.isContentEditable || rname === 'combobox' ? e.innerText : '', 300);
       if (e.getAttribute('placeholder') && el.label !== e.getAttribute('placeholder')) el.placeholder = clean(e.getAttribute('placeholder'), 80);
@@ -164,7 +167,21 @@ export function focusNode(id) {
   } else if (typeof e.select === 'function') {
     try { e.select(); } catch { /* some input types refuse select() */ }
   }
-  return { ok: document.activeElement === e || e.contains(document.activeElement) };
+  const special = ['date', 'time', 'datetime-local', 'month', 'week', 'color', 'range'].includes(e.type);
+  const autocomplete = e.getAttribute('role') === 'combobox' || e.type === 'search' ||
+    (e.getAttribute('aria-autocomplete') || 'none') !== 'none' || !!e.getAttribute('list');
+  return { ok: document.activeElement === e || e.contains(document.activeElement), special, autocomplete, kind: e.type || e.tagName.toLowerCase() };
+}
+
+/** Date/time/color/range inputs ignore typed text: set the value the way a picker would. */
+export function setNativeValue(id, text) {
+  const e = window.__hail?.nodes.get(id);
+  if (!e || !e.isConnected) return { error: 'stale' };
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+  setter.call(e, text);
+  e.dispatchEvent(new Event('input', { bubbles: true }));
+  e.dispatchEvent(new Event('change', { bubbles: true }));
+  return { value: e.value };
 }
 
 export function selectOptionNode(id, want) {

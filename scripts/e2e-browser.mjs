@@ -20,6 +20,7 @@ const FIXTURE = `<!doctype html><title>Fixture Search</title>
   <label>Destination <input id="q" name="q"></label>
   <label>Class <select id="cls"><option>Economy</option><option>Business</option></select></label>
   <label><input type="checkbox" id="ns"> Nonstop</label>
+  <label>Departure time <input type="time" id="tm"></label>
   <button>Search</button>
 </form>
 <p id="out"></p>
@@ -27,9 +28,28 @@ const FIXTURE = `<!doctype html><title>Fixture Search</title>
   f.onsubmit = (e) => { e.preventDefault(); out.textContent = 'Searched: ' + q.value + ' / ' + cls.value + ' / nonstop=' + ns.checked; };
 </script>`;
 
+// Scripted long-horizon agent: plans 3 lessons, asks the user once (lesson 2 quiz),
+// then for each lesson: navigate -> find -> click -> save_note -> task_complete.
+function fakeTaskAgent(body) {
+  const brief = body.messages.find((m) => m.role === 'user').content.map((p) => p.text || '').join('');
+  const n = /CURRENT SUBTASK: Complete lesson (\d)/.exec(brief)[1];
+  const tools = body.messages.filter((m) => m.role === 'tool');
+  const call = (name, args) => ({ choices: [{ message: { content: '', tool_calls: [{ id: `c${tools.length}`, type: 'function', function: { name, arguments: JSON.stringify(args) } }] } }] });
+  if (n === '2' && !/User answered/.test(brief) && !tools.length) return call('ask_user', { question: 'Lesson 2 has a quiz: what is 2 + 2?' });
+  if (tools.length === 0) return call('navigate', { url: `${base}/course/${n}` });
+  if (tools.length === 1) return call('find', { query: 'Mark lesson complete' });
+  if (tools.length === 2) return call('click', { ref: /\[(ref_\d+)\]/.exec(tools[1].content)[1] });
+  if (tools.length === 3) return call('save_note', { note: `Lesson ${n} completed` });
+  return call('task_complete', { summary: `Lesson ${n} marked complete` });
+}
+
 // Scripted model: ultrafast decisions + a two-step normal tool loop.
 function fakeModel(body) {
   const system = body.messages[0].content;
+  if (system.startsWith('You plan long browser tasks')) {
+    return { choices: [{ message: { content: JSON.stringify({ subtasks: [1, 2, 3].map((n) => ({ title: `Complete lesson ${n}`, detail: `Open lesson ${n} and mark it complete` })) }) } }] };
+  }
+  if (system.includes('You are working on ONE subtask')) return fakeTaskAgent(body);
   if (/Return only its letter/.test(system)) {
     // Stand-in for a letter-choice decision model (Together Tev1 request/response format).
     assert.equal(body.max_tokens, 8);
@@ -67,7 +87,16 @@ function fakeModel(body) {
   return { choices: [{ message: { content: `Page says: ${toolMsgs[0].content.split('\n')[0]}` } }] };
 }
 
+const completed = new Set();
 const server = http.createServer((req, res) => {
+  const lesson = /^\/course\/(\d)$/.exec(req.url);
+  if (lesson) {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    return res.end(`<!doctype html><title>Lesson ${lesson[1]}</title><h1>Lesson ${lesson[1]}</h1><p>Some lesson content.</p>
+      <button onclick="fetch('/done/${lesson[1]}').then(() => document.body.append(' Completed!'))">Mark lesson complete</button>`);
+  }
+  const done = /^\/done\/(\d)$/.exec(req.url);
+  if (done) { completed.add(done[1]); res.writeHead(204); return res.end(); }
   if (req.method === 'POST' && req.url.endsWith('/chat/completions')) {
     let data = '';
     req.on('data', (c) => { data += c; });
@@ -131,6 +160,9 @@ try {
   await call('click', { ref: ref('Search') });
   const out = await call('get_page_text');
   assert.match(out.text, /Searched: Tokyo \/ Business \/ nonstop=true/);
+  await call('type', { ref: ref('Departure time'), text: '19:30' });
+  assert.equal((await call('javascript', { code: 'tm.value' })).text, '19:30');
+  await assert.rejects(call('type', { ref: ref('Departure time'), text: 'tonight' }), /rejected/);
   step('type / select_option / click work with trusted input');
 
   const found = await call('find', { query: 'search' });
@@ -193,6 +225,39 @@ try {
   await panel.evaluate(() => document.querySelector('#open-settings').click());
   await panel.screenshot({ path: 'docs/settings.png' });
   step('side panel screenshots saved to docs/');
+
+  // ---- Tasks mode: long-horizon run driven through the real side panel ----
+  await panel.evaluate(() => document.querySelector('#close-settings').click());
+  const readTask = () => sw.evaluate(() => chrome.storage.local.get('task').then((r) => r.task || null));
+  const waitTask = async (pred, label, ms = 30000) => {
+    const end = Date.now() + ms;
+    for (;;) {
+      const t = await readTask();
+      if (pred(t)) return t;
+      if (Date.now() > end) throw new Error(`Timed out waiting for task to be ${label}: ${JSON.stringify(t && { status: t.status, log: t.log.slice(-3) })}`);
+      await new Promise((r) => setTimeout(r, 150));
+    }
+  };
+  await panel.evaluate(() => document.querySelector('[data-mode="tasks"]').click());
+  await panel.waitForSelector('#input');
+  await panel.screenshot({ path: 'docs/tasks-empty.png' });
+  await panel.type('#input', 'Complete all 3 lessons of this course');
+  await panel.keyboard.press('Enter');
+  const asking = await waitTask((t) => t?.status === 'waiting_user', 'waiting for the user');
+  assert.match(asking.question, /2 \+ 2/);
+  assert.equal(asking.subtasks.filter((x) => x.status === 'done').length, 1);
+  await panel.waitForSelector('[data-answer]');
+  await panel.screenshot({ path: 'docs/tasks-ask.png' });
+  step('task planned 3 subtasks, finished lesson 1, paused to ask the user');
+
+  await panel.type('[data-answer]', '4');
+  await panel.click('[data-act="task_answer"]');
+  const finished = await waitTask((t) => t?.status === 'done', 'done');
+  assert.deepEqual([...completed].sort(), ['1', '2', '3']);
+  assert.equal(finished.notes.filter((x) => /Lesson \d completed/.test(x)).length, 3);
+  await new Promise((r) => setTimeout(r, 300));
+  await panel.screenshot({ path: 'docs/tasks.png' });
+  step(`task finished: ${finished.subtasks.length}/${finished.subtasks.length} subtasks, ${finished.steps} steps, lessons ${[...completed].sort().join(',')} completed on the server`);
 
   console.log('\nE2E PASSED');
 } finally {

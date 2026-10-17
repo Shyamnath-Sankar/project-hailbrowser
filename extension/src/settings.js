@@ -47,6 +47,7 @@ export const DEFAULTS = {
     textModel: 'claude-haiku-5-5',
     maxActions: 60,
   },
+  tasks: { stepsPerSubtask: 40, maxTotalSteps: 400 },
   bridge: { enabled: true, port: 12306 },
   tools: { allowJavascript: true, showIndicator: true },
 };

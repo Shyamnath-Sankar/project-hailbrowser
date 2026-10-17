@@ -7,6 +7,7 @@ import { chat } from './providers.js';
 import { NORMAL_SYSTEM } from './prompts.js';
 
 const KEEP_IMAGES = 2;
+const KEEP_FULL_RESULTS = 12;
 
 function agentTools(settings) {
   return TOOL_SCHEMAS.filter((t) => !t.mcpOnly &&
@@ -14,16 +15,20 @@ function agentTools(settings) {
     !(t.name === 'javascript' && !settings.tools.allowJavascript));
 }
 
-/** Replace all but the newest screenshots with a placeholder to bound context size. */
-function pruneImages(messages) {
-  let seen = 0;
+/** Bound context size: keep the newest screenshots and tool outputs, shorten older ones. */
+export function pruneContext(messages) {
+  let images = 0, results = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
+    if (m.role === 'tool') results++;
     const lists = m.role === 'tool' ? m.results.map((r) => r.content) : m.role === 'user' ? [m.content] : [];
     for (const parts of lists) {
       for (let j = 0; j < parts.length; j++) {
-        if (parts[j].type !== 'image') continue;
-        if (++seen > KEEP_IMAGES) parts[j] = { type: 'text', text: '[older screenshot removed]' };
+        const p = parts[j];
+        if (p.type === 'image' && ++images > KEEP_IMAGES) parts[j] = { type: 'text', text: '[older screenshot removed]' };
+        else if (m.role === 'tool' && p.type === 'text' && results > KEEP_FULL_RESULTS && p.text.length > 400) {
+          parts[j] = { type: 'text', text: `${p.text.slice(0, 400)}… [older output shortened]` };
+        }
       }
     }
   }
@@ -31,11 +36,15 @@ function pruneImages(messages) {
 
 /**
  * Continue a conversation. `messages` is mutated (the side panel keeps it across turns).
- * Returns {status, summary}.
+ * Optional: `system` prompt, `extraTools` (schemas) handled by `onExtraTool(call)` which
+ * returns {text, stop?} — a truthy stop ends the loop with stopReason = stop.
+ * Returns {status, summary, stopReason, stopArgs, steps}.
  */
-export async function runNormal({ goal, messages, settings, signal, emit, tabId }) {
+export async function runNormal({ goal, messages, settings, signal, emit, tabId, system = NORMAL_SYSTEM, extraTools = [], onExtraTool, maxSteps, onStep }) {
   const cfg = providerConfig(settings, settings.normal.provider);
-  const tools = agentTools(settings);
+  const tools = [...agentTools(settings), ...extraTools];
+  const extraNames = new Set(extraTools.map((t) => t.name));
+  const limit = maxSteps || settings.normal.maxSteps;
   const tab = await resolveTab(tabId).catch(() => null);
   const context = tab ? `\n\n[Current tab ${tab.id}: ${tab.title} — ${tab.url}]` : '';
   // A previous turn interrupted mid-tool-call leaves calls without results; close them out.
@@ -46,23 +55,32 @@ export async function runNormal({ goal, messages, settings, signal, emit, tabId 
   messages.push({ role: 'user', content: [{ type: 'text', text: goal + context }] });
 
   let finalText = '';
-  for (let step = 0; step < settings.normal.maxSteps; step++) {
-    if (signal.aborted) return { status: 'stopped', summary: finalText || 'Stopped.' };
-    pruneImages(messages);
+  for (let step = 0; step < limit; step++) {
+    if (signal.aborted) return { status: 'stopped', summary: finalText || 'Stopped.', steps: step };
+    pruneContext(messages);
     emit({ type: 'thinking' });
     const t0 = performance.now();
-    const reply = await chat({ cfg, model: settings.normal.model, system: NORMAL_SYSTEM, messages, tools, signal });
+    const reply = await chat({ cfg, model: settings.normal.model, system, messages, tools, signal });
+    onStep?.();
     messages.push({ role: 'assistant', text: reply.text, toolCalls: reply.toolCalls });
     if (reply.text) {
       finalText = reply.text;
       emit({ type: 'assistant', text: reply.text, latencyMs: Math.round(performance.now() - t0) });
     }
-    if (!reply.toolCalls.length) return { status: 'done', summary: finalText };
+    if (!reply.toolCalls.length) return { status: 'done', summary: finalText, steps: step + 1 };
 
     const results = [];
+    let stop = null;
     for (const call of reply.toolCalls) {
-      if (signal.aborted) {
-        results.push({ id: call.id, name: call.name, isError: true, content: [{ type: 'text', text: 'Stopped by user.' }] });
+      if (signal.aborted || stop) {
+        results.push({ id: call.id, name: call.name, isError: true, content: [{ type: 'text', text: signal.aborted ? 'Stopped by user.' : 'Skipped.' }] });
+        continue;
+      }
+      if (extraNames.has(call.name)) {
+        const out = await onExtraTool(call);
+        emit({ type: 'task_tool', name: call.name, args: call.args });
+        results.push({ id: call.id, name: call.name, isError: !!out.isError, content: [{ type: 'text', text: out.text || 'ok' }] });
+        if (out.stop) stop = { reason: out.stop, args: call.args };
         continue;
       }
       emit({ type: 'tool', name: call.name, args: call.args });
@@ -76,6 +94,7 @@ export async function runNormal({ goal, messages, settings, signal, emit, tabId 
       results.push({ id: call.id, name: call.name, isError: !!res.isError, content: res.content });
     }
     messages.push({ role: 'tool', results });
+    if (stop) return { status: 'done', summary: finalText, stopReason: stop.reason, stopArgs: stop.args, steps: step + 1 };
   }
-  return { status: 'blocked', summary: `${finalText}\n\nStopped after ${settings.normal.maxSteps} steps.`.trim() };
+  return { status: 'blocked', summary: `${finalText}\n\nStopped after ${limit} steps.`.trim(), steps: limit };
 }
