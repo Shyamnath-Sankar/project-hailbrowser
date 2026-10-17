@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { actionSpace, buildActions, decide, validateChoice } from '../extension/src/agent/decision.js';
 import { parseJsonObject, toAnthropicMessages, toOpenAIMessages } from '../extension/src/agent/providers.js';
 import { parseChord } from '../extension/src/browser/cdp.js';
-import { formatElement, parseRef } from '../extension/src/tools/execute.js';
+import { formatElement, formatSnapshot, parseRef } from '../extension/src/tools/execute.js';
 import { DEFAULTS } from '../extension/src/settings.js';
 
 const snap = {
@@ -196,4 +196,23 @@ test('tasks: plan normalization and answering a blocked subtask', async () => {
   assert.equal(t.subtasks[0].status, 'skipped');
   assert.equal(t.status, 'running');
   assert.match(t.notes[0], /skip/);
+});
+
+test('read_page output: input types, multi-selects and off-screen counts', () => {
+  assert.equal(formatElement({ id: 7, role: 'textbox', label: 'Color', inputType: 'color', value: '#ff0000', inViewport: true }),
+    '[ref_7] textbox "Color" type=color value="#ff0000"');
+  assert.match(formatElement({ id: 8, role: 'combobox', label: 'Tags', multiple: true, value: 'Red, Blue', options: [{ label: 'Red' }, { label: 'Blue' }], inViewport: true }),
+    /"Tags" multiple value="Red, Blue" options=\[Red \| Blue\]/);
+  const snap = { title: 't'.repeat(400), url: 'https://x.test/?q=' + 'a'.repeat(5000), viewport: { w: 800, h: 600 }, scroll: { y: 0, height: 600 },
+    elements: [], omitted: 0, offscreen: 12, text: '' };
+  const out = formatSnapshot(snap);
+  assert.match(out, /12 more off-screen \(scroll or use find\)/);
+  assert.ok(out.split('\n')[0].length < 500, 'long titles and URLs are shortened');
+});
+
+test('buildActions reports how many candidates were cut', () => {
+  const elements = Array.from({ length: 300 }, (_, i) => ({ id: i + 1, role: 'button', label: `B${i}`, inViewport: true }));
+  const { actions, omitted } = buildActions({ elements, scroll: { y: 0, height: 600 }, viewport: { h: 600 } });
+  assert.equal(omitted, 50);
+  assert.equal(actions.filter((a) => a.kind === 'click').length, 250);
 });

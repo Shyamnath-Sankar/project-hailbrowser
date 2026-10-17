@@ -3,6 +3,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import os from 'node:os';
+import path from 'node:path';
+
+// Never touch the user's real ~/.hailbrowser trust file from tests.
+const TRUST_FILE = path.join(os.tmpdir(), `hail-trust-test-${process.pid}.json`);
 import { WebSocket } from 'ws';
 
 function connectExtension(port) {
@@ -15,7 +20,7 @@ function connectExtension(port) {
 
 test('MCP client -> server -> extension round trip', async () => {
   const port = 22316;
-  const transport = new StdioClientTransport({ command: process.execPath, args: ['mcp-server/src/index.js', '--port', String(port)], stderr: 'ignore' });
+  const transport = new StdioClientTransport({ command: process.execPath, env: { ...process.env, HAILBROWSER_TRUST_FILE: TRUST_FILE }, args: ['mcp-server/src/index.js', '--port', String(port)], stderr: 'ignore' });
   const client = new Client({ name: 'e2e-test', version: '1.0.0' });
   await client.connect(transport);
 

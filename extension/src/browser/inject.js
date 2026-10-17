@@ -53,14 +53,14 @@ export function pageSnapshot(opts) {
       if (e.type === 'search') return 'searchbox';
       if (e.type === 'number') return 'spinbutton';
       if (e.type === 'range') return 'slider';
-      if (['text', 'email', 'url', 'tel', 'password', 'date', 'time', 'datetime-local', 'month', 'week', ''].includes(e.type)) return 'textbox';
+      if (['text', 'email', 'url', 'tel', 'password', 'date', 'time', 'datetime-local', 'month', 'week', 'color', ''].includes(e.type)) return 'textbox';
     }
     return null;
   };
 
   const W = innerWidth, Hh = innerHeight;
   const elements = [];
-  let omitted = 0;
+  let omitted = 0, offscreen = 0;
   for (const e of document.querySelectorAll(selector)) {
     if (e.type === 'hidden' || e.type === 'file') continue;
     if (e.matches(':disabled') || e.closest('[aria-disabled="true"]') || !visible(e)) continue;
@@ -71,7 +71,7 @@ export function pageSnapshot(opts) {
     if (r.width <= 0 || r.height <= 0) continue;
     const cx = r.x + r.width / 2, cy = r.y + r.height / 2;
     const inViewport = cx >= 0 && cy >= 0 && cx < W && cy < Hh;
-    if (o.viewportOnly && !inViewport) continue;
+    if (o.viewportOnly && !inViewport) { offscreen++; continue; }
     if (elements.length >= o.maxElements) { omitted++; continue; }
     const el = { id: identity(e), role: rname, label: clean(name(e), 160) || rname,
       rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }, inViewport };
@@ -81,6 +81,8 @@ export function pageSnapshot(opts) {
     }
     if (['checkbox', 'radio'].includes(e.type)) el.checked = String(e.checked);
     if (e.tagName === 'A' && e.getAttribute('href')) el.href = e.href.slice(0, 200);
+    if (e.tagName === 'INPUT' && ['date', 'time', 'datetime-local', 'month', 'week', 'color', 'range', 'number'].includes(e.type)) el.inputType = e.type;
+    if (e.tagName === 'SELECT' && e.multiple) el.multiple = true;
     if (e.tagName === 'SELECT') {
       el.value = [...e.selectedOptions].map((op) => op.label).join(', ');
       el.options = [...e.options].slice(0, 80).filter((op) => !op.disabled && !op.closest('optgroup[disabled]'))
@@ -119,7 +121,7 @@ export function pageSnapshot(opts) {
     url: location.href, title: document.title,
     viewport: { w: W, h: Hh, dpr: devicePixelRatio },
     scroll: { x: Math.round(scrollX), y: Math.round(scrollY), height: document.documentElement.scrollHeight, width: document.documentElement.scrollWidth },
-    elements, omitted, text: words.join('\n').slice(0, o.maxText), formKey,
+    elements, omitted, offscreen, text: words.join('\n').slice(0, o.maxText), formKey,
   };
 }
 
@@ -184,20 +186,132 @@ export function setNativeValue(id, text) {
   return { value: e.value };
 }
 
+/**
+ * Choose options of a <select>. want is one value/label, or an array for <select multiple>
+ * (sets exactly those). A single value on a multi-select is added to the current selection.
+ */
 export function selectOptionNode(id, want) {
   const e = window.__hail?.nodes.get(id);
   if (!e || !e.isConnected) return { error: 'stale' };
   if (e.tagName !== 'SELECT') return { error: 'not a <select>; click it and pick the option instead' };
   const norm = (s) => String(s).trim().toLowerCase();
-  const option = [...e.options].find((op) => op.value === want) ||
-    [...e.options].find((op) => norm(op.label) === norm(want)) ||
-    [...e.options].find((op) => norm(op.label).includes(norm(want)));
-  if (!option) return { error: `no option matching "${want}"`, options: [...e.options].map((op) => op.label).slice(0, 40) };
+  const usable = [...e.options].filter((op) => !op.disabled);
+  const find = (w) => usable.find((op) => op.value === w) || usable.find((op) => norm(op.label) === norm(w)) ||
+    usable.find((op) => norm(op.label).includes(norm(w)));
+  const wants = Array.isArray(want) ? want : [want];
+  if (wants.length > 1 && !e.multiple) return { error: 'this <select> allows only one option; pass a single option' };
+  const picked = [];
+  for (const w of wants) {
+    const op = find(w);
+    if (!op) return { error: `no option matching "${w}"`, options: [...e.options].map((x) => x.label).slice(0, 40) };
+    picked.push(op);
+  }
   e.focus();
-  e.value = option.value;
+  if (e.multiple) {
+    if (Array.isArray(want)) for (const op of e.options) op.selected = picked.includes(op);
+    else picked[0].selected = true;
+  } else {
+    e.value = picked[0].value;
+  }
   e.dispatchEvent(new Event('input', { bubbles: true }));
   e.dispatchEvent(new Event('change', { bubbles: true }));
-  return { selected: option.label };
+  return { selected: [...e.selectedOptions].map((op) => op.label) };
+}
+
+/** Value of an observed field after typing, for read-back checks. */
+export function readValue(id) {
+  const e = window.__hail?.nodes.get(id);
+  if (!e || !e.isConnected) return null;
+  const value = e.isContentEditable ? e.innerText : 'value' in e ? String(e.value) : e.textContent;
+  return { value: value.slice(0, 2000), password: e.type === 'password' };
+}
+
+/** What has keyboard focus (role + name), so typing without a ref reports where text went. */
+export function focusedInfo() {
+  let e = document.activeElement;
+  while (e?.shadowRoot?.activeElement) e = e.shadowRoot.activeElement;
+  if (!e || e === document.body || e === document.documentElement) return null;
+  const editable = e.isContentEditable || ['INPUT', 'TEXTAREA'].includes(e.tagName) || e.tagName === 'IFRAME';
+  const label = (e.getAttribute('aria-label') || [...(e.labels || [])].map((l) => l.innerText).join(' ') ||
+    e.getAttribute('placeholder') || e.getAttribute('name') || e.getAttribute('title') || e.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  return { tag: e.tagName.toLowerCase(), type: e.type || '', label, editable };
+}
+
+/**
+ * Find what a scroll should move: the nearest ancestor of the ref (or of the point) that can still
+ * scroll in that direction, else the page. Remembers it and its position for scrollCheck.
+ */
+export function scrollProbe(id, x, y, dx, dy) {
+  const H = (window.__hail ||= { ids: new WeakMap(), nodes: new Map(), next: (100 + Math.floor(Math.random() * 900)) * 10 });
+  const start = id != null ? H.nodes.get(id) : document.elementFromPoint(x ?? innerWidth / 2, y ?? innerHeight / 2);
+  if (id != null && (!start || !start.isConnected)) return { error: 'stale' };
+  const page = document.scrollingElement || document.documentElement;
+  const canScroll = (e) => {
+    const cs = getComputedStyle(e);
+    if (dy) {
+      if (!/(auto|scroll|overlay)/.test(cs.overflowY) || e.scrollHeight <= e.clientHeight + 1) return false;
+      return dy > 0 ? e.scrollTop + e.clientHeight < e.scrollHeight - 1 : e.scrollTop > 0;
+    }
+    if (!/(auto|scroll|overlay)/.test(cs.overflowX) || e.scrollWidth <= e.clientWidth + 1) return false;
+    return dx > 0 ? e.scrollLeft + e.clientWidth < e.scrollWidth - 1 : e.scrollLeft > 0;
+  };
+  const innerScroller = (from) => {
+    for (let e = from; e && e !== page && e !== document.body; e = e.parentElement || e.getRootNode?.().host) {
+      if (e.nodeType === 1 && canScroll(e)) return e;
+    }
+    return null;
+  };
+  const pageCan = dy ? (dy > 0 ? page.scrollTop + innerHeight < page.scrollHeight - 1 : page.scrollTop > 0)
+    : (dx > 0 ? page.scrollLeft + innerWidth < page.scrollWidth - 1 : page.scrollLeft > 0);
+  let target, wheelAt = null;
+  if (id == null && x == null && pageCan) {
+    // No ref: "scroll" means the page. Remember a spot that isn't inside an inner scroll box (for wheel fallback).
+    target = page;
+    for (const [fx, fy] of [[0.5, 0.5], [0.5, 0.2], [0.5, 0.8], [0.15, 0.5], [0.85, 0.5], [0.05, 0.5], [0.95, 0.5]]) {
+      const px = innerWidth * fx, py = innerHeight * fy;
+      if (!innerScroller(document.elementFromPoint(px, py))) { wheelAt = [px, py]; break; }
+    }
+  } else {
+    target = innerScroller(start) || page;
+  }
+  H.scrollTarget = target;
+  const isPage = target === page;
+  const cls = typeof target.className === 'string' && target.className.trim() ? '.' + target.className.trim().split(/\s+/)[0] : '';
+  const label = isPage ? 'the page' : (target.getAttribute('aria-label') || (target.id ? `#${target.id}` : `${target.tagName.toLowerCase()}${cls}`)).slice(0, 60);
+  const r = isPage ? { left: 0, top: 0, width: innerWidth, height: innerHeight } : target.getBoundingClientRect();
+  const [cx, cy] = wheelAt || [Math.min(Math.max(r.left + r.width / 2, 1), innerWidth - 2), Math.min(Math.max(r.top + r.height / 2, 1), innerHeight - 2)];
+  return { isPage, label, top: Math.round(target.scrollTop), left: Math.round(target.scrollLeft), x: cx, y: cy };
+}
+
+/**
+ * Scroll the box found by scrollProbe. mode "direct" scrolls it instantly by (dx, dy): exact and
+ * immune to the late, animated wheel handling of background tabs. mode "wheel" only measures, after
+ * a trusted wheel event was sent (for sites that scroll with their own wheel handlers).
+ */
+export async function scrollCheck(before, dx, dy, mode) {
+  const t = window.__hail?.scrollTarget;
+  if (!t || !t.isConnected) return { error: 'stale' };
+  const pos = () => [Math.round(t.scrollTop), Math.round(t.scrollLeft)];
+  const tick = () => Promise.race([new Promise((r) => requestAnimationFrame(() => r())), new Promise((r) => setTimeout(r, 34))]);
+  const startPos = `${before.top},${before.left}`;
+  if (mode === 'direct') {
+    t.scrollBy({ top: dy, left: dx, behavior: 'instant' });
+    await tick(); // let scroll listeners (lazy loading) run
+  } else {
+    const waitFrom = performance.now();
+    while (pos().join() === startPos && performance.now() - waitFrom < 300) await tick();
+    const started = performance.now();
+    let last = pos().join(), still = 0;
+    while (still < 3 && performance.now() - started < 1000) {
+      await tick();
+      const now = pos().join();
+      still = now === last ? still + 1 : 0;
+      last = now;
+    }
+  }
+  const [top, left] = pos();
+  return { moved: `${top},${left}` !== startPos, top, left,
+    maxTop: Math.max(0, t.scrollHeight - t.clientHeight), maxLeft: Math.max(0, t.scrollWidth - t.clientWidth) };
 }
 
 /** Wait for the page to react: visible autocomplete options (≤200ms) or two frames (≤50ms). */

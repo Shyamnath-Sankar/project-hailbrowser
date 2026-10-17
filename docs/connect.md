@@ -73,7 +73,8 @@ Swap the command for `npx -y hailbrowser-mcp` (on Windows: `cmd /c npx -y hailbr
 | Flag / env | Default | Meaning |
 |---|---|---|
 | `--port N` / `HAILBROWSER_PORT` | `12306` | Hub port. Set the same port in the extension's Settings. |
-| `HAILBROWSER_EXTENSION_ID` | unset | Only accept this extension ID (find it on `chrome://extensions`). |
+| `HAILBROWSER_EXTENSION_ID` | unset | Only accept this extension ID (find it on `chrome://extensions`). Without it, the first extension that connects is trusted. |
+| `HAILBROWSER_TRUST_FILE` | `~/.hailbrowser/trusted-extension.json` | Where the trusted extension ID is remembered. Manage it with `hailbrowser-mcp trust [<id> \| --reset]`. |
 
 ## Several agents at once
 

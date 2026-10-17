@@ -45,3 +45,10 @@ A standard loop: the model gets the tool list (minus `run_task`), calls tools, s
 ## Bridge
 
 The service worker holds a WebSocket to `ws://127.0.0.1:<port>/?role=extension` and pings every 20 s (which keeps an MV3 worker alive) with an alarm as backup. The hub rejects browser-page origins. Messages are `{type:'call', id, tool, args, client}` → `{type:'result', id, result}` where `result` is an MCP `CallToolResult`.
+The hub sends `{type:'cancel', id}` when a call times out or the MCP client cancels it (peers forward it to the host); the extension aborts that call, including a `run_task`. Only the trusted extension ID may connect (see README → Security).
+
+## Dialogs, scrolling and pop-ups
+
+- Every attached tab has the CDP `Page` domain enabled. `alert()` is accepted at once and reported in the next tool result. `confirm`/`prompt`/`beforeunload` stay open: in-flight input returns, page reads fail with a message naming the dialog, and the agent calls `handle_dialog`. `page.run` also has a 20 s timeout, so nothing waits forever on a frozen page.
+- `scroll` finds the nearest box that can still scroll in that direction (from the ref/point, or the page when none is given) and scrolls it directly, which is exact and unaffected by background tabs' late wheel animations. It falls back to a trusted vertical wheel event for sites that scroll in their own wheel handlers. Horizontal wheels are never sent, since at the page edge Chrome treats them as back/forward swipes.
+- Click, Enter and key presses report tabs opened during the action; the agent tab does not change.

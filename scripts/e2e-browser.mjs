@@ -10,6 +10,11 @@ import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import os from 'node:os';
+import path from 'node:path';
+
+// Never touch the user's real ~/.hailbrowser trust file from tests.
+const TRUST_FILE = path.join(os.tmpdir(), `hail-trust-test-${process.pid}.json`);
 
 const EXT = fileURLToPath(new URL('../extension', import.meta.url));
 const BRIDGE_PORT = 22400;
@@ -27,6 +32,24 @@ const FIXTURE = `<!doctype html><title>Fixture Search</title>
 <script>
   f.onsubmit = (e) => { e.preventDefault(); out.textContent = 'Searched: ' + q.value + ' / ' + cls.value + ' / nonstop=' + ns.checked; };
 </script>`;
+
+// Edge cases from review: dialogs, nested scrolling, pop-ups, multi-select, color, masks.
+const LAB = `<!doctype html><title>Lab</title>
+<h1>Lab</h1>
+<p id="out">idle</p>
+<button onclick="alert('Saved!')">Show alert</button>
+<button onclick="out.textContent = 'confirm=' + confirm('Really delete?')">Delete item</button>
+<button onclick="out.textContent = 'name=' + prompt('New name?', 'old')">Rename</button>
+<a href="/course/9" target="_blank">Open help</a>
+<div id="sc" style="height:150px;overflow:auto;border:1px solid #999">
+  ${Array.from({ length: 40 }, (_, i) => `<button style="display:block">Item ${i + 1}</button>`).join('')}
+</div>
+<label>Colors <select id="ms" multiple><option>Red</option><option>Green</option><option>Blue</option></select></label>
+<label>Accent <input type="color" id="col"></label>
+<label>Volume <input type="range" id="vol" min="0" max="10" step="1"></label>
+<label>Phone <input id="ph" oninput="this.value = this.value.replace(/[^0-9]/g, '')"></label>
+<div style="height:2500px"></div>
+<button>Footer button</button>`;
 
 // Scripted long-horizon agent: plans 3 lessons, asks the user once (lesson 2 quiz),
 // then for each lesson: navigate -> find -> click -> save_note -> task_complete.
@@ -95,6 +118,10 @@ const server = http.createServer((req, res) => {
     return res.end(`<!doctype html><title>Lesson ${lesson[1]}</title><h1>Lesson ${lesson[1]}</h1><p>Some lesson content.</p>
       <button onclick="fetch('/done/${lesson[1]}').then(() => document.body.append(' Completed!'))">Mark lesson complete</button>`);
   }
+  if (req.url.startsWith('/lab')) {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    return res.end(LAB);
+  }
   const done = /^\/done\/(\d)$/.exec(req.url);
   if (done) { completed.add(done[1]); res.writeHead(204); return res.end(); }
   if (req.method === 'POST' && req.url.endsWith('/chat/completions')) {
@@ -135,7 +162,7 @@ try {
   step('extension loaded and configured');
 
   client = new Client({ name: 'e2e', version: '1.0.0' });
-  await client.connect(new StdioClientTransport({ command: process.execPath, args: ['mcp-server/src/index.js', '--port', String(BRIDGE_PORT)], stderr: 'inherit' }));
+  await client.connect(new StdioClientTransport({ command: process.execPath, env: { ...process.env, HAILBROWSER_TRUST_FILE: TRUST_FILE }, args: ['mcp-server/src/index.js', '--port', String(BRIDGE_PORT)], stderr: 'inherit' }));
   const call = async (name, args = {}) => {
     const r = await client.callTool({ name, arguments: args });
     const text = r.content.filter((c) => c.type === 'text').map((c) => c.text).join('\n');
@@ -176,6 +203,64 @@ try {
   await call('press_key', { keys: 'Tab ctrl+a' });
   await call('scroll', { direction: 'down' });
   step('find / javascript / screenshot / press_key / scroll');
+
+  // ---- review fixes: dialogs, scrolling, pop-ups, inputs, argument checks ----
+  await call('navigate', { url: `${base}/lab?q=${'x'.repeat(3000)}` });
+  const tabsLong = await call('tabs_context');
+  assert.ok(tabsLong.text.split('\n').every((l) => l.length < 400), 'tabs_context lines are shortened');
+  const lab = await call('read_page');
+  const labRef = (label) => new RegExp(`\\[(ref_\\d+)\\] \\w+ "${label}`).exec(lab.text)[1];
+  const js2 = async (code) => (await call('javascript', { code })).text;
+
+  const alerted = await call('click', { ref: labRef('Show alert') });
+  assert.match(alerted.text, /alert \(closed automatically\): "Saved!"/);
+  const confirmed = await call('click', { ref: labRef('Delete item') });
+  assert.match(confirmed.text, /confirm dialog is open: "Really delete\?"/);
+  await assert.rejects(call('read_page'), /confirm dialog is open.*handle_dialog/s);
+  assert.match((await call('handle_dialog', { accept: false })).text, /Dismissed the confirm dialog "Really delete\?"/);
+  assert.equal(await js2('out.textContent'), 'confirm=false');
+  await call('click', { ref: labRef('Rename') });
+  assert.match((await call('handle_dialog', { accept: true, text: 'Zed' })).text, /Accepted the prompt/);
+  assert.equal(await js2('out.textContent'), 'name=Zed');
+  assert.match((await call('handle_dialog', {})).text, /No dialog is open/);
+  step('dialogs: alert auto-closed and reported, confirm/prompt block until handle_dialog');
+
+  const inner = await call('scroll', { direction: 'down', ref: labRef('Item 1'), amount: 2 });
+  assert.match(inner.text, /Scrolled down inside #sc: now at \d+\/\d+px/);
+  assert.ok(Number(await js2('sc.scrollTop')) > 0);
+  assert.match((await call('scroll', { direction: 'left' })).text, /Nothing scrolled: the page is already at the left edge/);
+  assert.match((await call('scroll', { direction: 'down', amount: 1 })).text, /Scrolled down the page/);
+  assert.match((await call('scroll', { direction: 'up', amount: 50 })).text, /Scrolled up the page: now at 0\//);
+  await assert.rejects(call('scroll', { direction: 'sideways' }), /direction must be/);
+  await assert.rejects(call('hover', {}), /hover needs a ref/);
+  await assert.rejects(call('click', { x: 'a' }), /click needs a ref/);
+  step('scroll moves the right box and says when nothing moved; bad arguments get clear errors');
+
+  const popup = await call('click', { ref: labRef('Open help') });
+  const popupId = Number(/Opened new tab (\d+)/.exec(popup.text)?.[1]);
+  assert.ok(popupId, popup.text);
+  assert.match((await call('tabs_context')).text, /→ \[\d+\].*Lab/); // still acting on the lab tab
+  await call('tabs_close', { tabId: popupId });
+  step('target=_blank pop-up reported, agent tab unchanged');
+
+  await call('select_option', { ref: labRef('Colors'), option: 'Red' });
+  assert.match((await call('select_option', { ref: labRef('Colors'), option: 'Blue' })).text, /"Red", "Blue"/);
+  assert.equal(await js2('[...ms.selectedOptions].map(o => o.label).join()'), 'Red,Blue');
+  await call('select_option', { ref: labRef('Colors'), options: ['Green'] });
+  assert.equal(await js2('[...ms.selectedOptions].map(o => o.label).join()'), 'Green');
+  assert.match(lab.text, /"Accent" type=color/);
+  await call('type', { ref: labRef('Accent'), text: '#00ff00' });
+  assert.equal(await js2('col.value'), '#00ff00');
+  assert.match((await call('type', { ref: labRef('Volume'), text: '7.4' })).text, /stored "7"/);
+  assert.match((await call('type', { ref: labRef('Phone'), text: 'abc123' })).text, /field now shows "123"/);
+  await call('javascript', { code: 'document.activeElement.blur(), 1' });
+  await assert.rejects(call('type', { text: 'lost' }), /Nothing on the page has keyboard focus/);
+  await call('click', { ref: labRef('Phone') });
+  assert.match((await call('type', { text: '9', clear: false })).text, /into the focused input\[text\] "Phone"/);
+  const compact = await call('read_page', { compact: true });
+  assert.match(compact.text, /more off-screen/);
+  assert.ok(compact.text.length < lab.text.length);
+  step('multi-select, color, range, input masks, focus checks and compact read_page');
 
   // Open the side panel UI in a tab so it renders the run_task events below.
   const extId = new URL(swTarget.url()).host;

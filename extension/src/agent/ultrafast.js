@@ -34,8 +34,15 @@ async function observeAfter(tabId, action) {
 async function act(tabId, action, snap, text) {
   if (action.kind === 'wait') return page.sleep(100);
   if (action.kind === 'scroll') {
-    await cdp.wheel(tabId, snap.viewport.w / 2, snap.viewport.h / 2, 0, action.delta);
-    return page.sleep(60);
+    // Scroll the page (or main scroll area) directly: exact, and no late wheel animation to race.
+    const probe = await page.run(tabId, inj.scrollProbe, null, null, null, 0, action.delta);
+    if (!probe || probe.error) return;
+    const after = await page.run(tabId, inj.scrollCheck, probe, 0, action.delta, 'direct');
+    if (after && !after.moved) {
+      await cdp.wheel(tabId, probe.x, probe.y, 0, action.delta);
+      await page.run(tabId, inj.scrollCheck, probe, 0, action.delta, 'wheel');
+    }
+    return;
   }
   // Scoped freshness guard: same document URL, same form values, same target semantics.
   const now = await page.observe(tabId, OBSERVE);
@@ -93,8 +100,10 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
     if (decisions >= uf.maxActions * 2) return finish('blocked', 'Reached the decision budget.', snap);
     if (stale > 6) return finish('blocked', 'The page kept changing under every decision.', snap);
 
-    const { actions } = buildActions(snap);
-    const decision = await decide({ snap, actions, goal, history, settings, decisionCfg, signal });
+    const { actions, omitted } = buildActions(snap);
+    // Tell the model when the candidate list was cut, so it scrolls instead of giving up.
+    const view = omitted ? { ...snap, text: `[${omitted} more on-screen actions were not listed. Scroll to bring other parts of the page into view.]\n${snap.text}` } : snap;
+    const decision = await decide({ snap: view, actions, goal, history, settings, decisionCfg, signal });
     decisions++;
     const action = actions.find((a) => a.id === decision.choice);
     emit({
@@ -145,6 +154,7 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
     try {
       await act(tabId, action, snap, text);
     } catch (e) {
+      if (e instanceof cdp.DialogError) return finish('blocked', e.message, snap);
       if (!(e instanceof StaleError)) throw e;
       stale++;
       emit({ type: 'stale', text: e.message });
@@ -156,7 +166,13 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
     // Log execution before observing: a failed observation must not erase the action.
     const entry = { step: history.length + 1, action: action.label, kind: action.kind, operation: decision.operation, text, page_changed: null, url: snap.url };
     history.push(entry);
-    const next = await observeAfter(tabId, action);
+    let next;
+    try {
+      next = await observeAfter(tabId, action);
+    } catch (e) {
+      if (e instanceof cdp.DialogError) return finish('blocked', `After "${action.label}": ${e.message}`, snap);
+      throw e;
+    }
     entry.page_changed = marker(next) !== marker(snap);
     snap = next;
     emit({ type: 'action', ...entry, elapsedMs: elapsed() });

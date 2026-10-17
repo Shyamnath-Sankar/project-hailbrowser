@@ -51,7 +51,7 @@ Three decision backends:
 
 ```bash
 git clone https://github.com/Shyamnath-Sankar/project-hailbrowser.git
-cd project-hailbrowser
+cd hailbrowser
 npm install
 ```
 
@@ -93,7 +93,9 @@ Ask your agent things like *"Use hailbrowser to open my GitHub notifications and
 
 ## Tools
 
-`tabs_context` · `tabs_create` · `tabs_select` · `tabs_close` · `navigate` · `read_page` · `find` · `get_page_text` · `screenshot` · `click` · `type` · `press_key` · `scroll` · `select_option` · `hover` · `wait` · `javascript` · `run_task` (MCP only: hands a whole goal to HailBrowser's own agent)
+`tabs_context` · `tabs_create` · `tabs_select` · `tabs_close` · `navigate` · `read_page` · `find` · `get_page_text` · `screenshot` · `click` · `type` · `press_key` · `scroll` · `select_option` · `hover` · `handle_dialog` · `wait` · `javascript` · `run_task` and `stop_task` (MCP only: hand a whole goal to HailBrowser's own agent, or stop it)
+
+Tool results stay honest: alerts are closed and reported, `confirm`/`prompt`/"leave site?" dialogs pause the page until `handle_dialog`, pop-up tabs are reported, `scroll` says which box moved (or that nothing could), and `type` reports when a page reformats or rejects the input. If a call times out or the agent cancels it, HailBrowser stops the action instead of finishing it later.
 
 `read_page` returns elements like `[ref_12] textbox "Search" value="cats"`; pass `ref_12` to `click`/`type`. Screenshot coordinates also work.
 
@@ -114,7 +116,8 @@ More in [docs/architecture.md](docs/architecture.md).
 ## Security model
 
 - API keys stay in `chrome.storage.local` and go only to the provider you call.
-- The MCP hub listens on `127.0.0.1` only and refuses WebSocket connections from web pages (any `Origin` other than `chrome-extension://`). Set `HAILBROWSER_EXTENSION_ID` to pin it to your extension ID.
+- The MCP hub listens on `127.0.0.1` only and refuses WebSocket connections from web pages (any `Origin` other than `chrome-extension://`).
+- Only one extension may drive the browser: the first HailBrowser that connects is trusted and remembered in `~/.hailbrowser/trusted-extension.json`; other extensions are rejected. After reinstalling HailBrowser from a different folder, run `npx hailbrowser-mcp trust <new id>` (or `trust --reset`). `HAILBROWSER_EXTENSION_ID` pins an ID explicitly.
 - External agents can be switched off in Settings (**Allow external agents**). The `javascript` tool can be disabled separately.
 - Page content is treated as untrusted data in all prompts. The agents are told never to enter passwords or payment details or complete purchases without explicit instruction.
 - `chrome://` pages and the Chrome Web Store can't be automated (Chrome blocks it).

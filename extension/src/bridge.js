@@ -13,6 +13,7 @@ export class Bridge {
     this.retryMs = 1000;
     this.timer = null;
     this.ping = null;
+    this.inflight = new Map(); // call id -> AbortController (the hub may cancel a call)
   }
 
   configure({ enabled, port }) {
@@ -49,12 +50,17 @@ export class Bridge {
     ws.onmessage = async (ev) => {
       let msg;
       try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.type === 'cancel') return this.inflight.get(msg.id)?.abort();
       if (msg.type !== 'call') return;
+      const controller = new AbortController();
+      this.inflight.set(msg.id, controller);
       let result;
       try {
-        result = await this.onCall(msg.tool, msg.args || {}, msg.client);
+        result = await this.onCall(msg.tool, msg.args || {}, msg.client, controller.signal);
       } catch (e) {
         result = { isError: true, content: [{ type: 'text', text: e?.message || String(e) }] };
+      } finally {
+        this.inflight.delete(msg.id);
       }
       if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'result', id: msg.id, result }));
     };
@@ -76,6 +82,8 @@ export class Bridge {
 
   cleanup() {
     clearInterval(this.ping);
+    for (const c of this.inflight.values()) c.abort(); // the agent that asked is gone
+    this.inflight.clear();
     this.ws = null;
     this.connected = false;
   }

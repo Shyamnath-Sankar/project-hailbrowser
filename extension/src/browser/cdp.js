@@ -2,6 +2,9 @@
 // background tabs, without Chrome's --remote-debugging-port.
 
 const attached = new Map(); // tabId -> Promise<void>
+const dialogs = new Map(); // tabId -> open dialog {type, message, defaultPrompt, url}
+const handledAlerts = new Map(); // tabId -> [message] alerts closed automatically, not yet reported
+const dialogWaiters = new Map(); // tabId -> Set<() => void> commands to release when a dialog opens
 
 export function attach(tabId) {
   if (!attached.has(tabId)) {
@@ -13,6 +16,8 @@ export function attach(tabId) {
       }
       // Keep background tabs rendering (rAF, animations) without bringing them to the front.
       await chrome.debugger.sendCommand({ tabId }, 'Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
+      // Page events tell us when alert/confirm/prompt/beforeunload dialogs open.
+      await chrome.debugger.sendCommand({ tabId }, 'Page.enable').catch(() => {});
     })();
     attached.set(tabId, p);
     p.catch(() => attached.delete(tabId));
@@ -22,16 +27,90 @@ export function attach(tabId) {
 
 export async function send(tabId, method, params = {}) {
   await attach(tabId);
+  // Input and script evaluation block while a modal dialog is up.
+  if (dialogs.has(tabId) && /^(Input|Runtime)\./.test(method)) throw new DialogError(dialogs.get(tabId));
+  const command = async () => {
+    const out = await untilDialog(tabId, chrome.debugger.sendCommand({ tabId }, method, params));
+    // An input that opened a dialog did its job; anything else can't finish while it's open.
+    if (out === DIALOG && !method.startsWith('Input.')) throw new DialogError(dialogs.get(tabId));
+    return out === DIALOG ? undefined : out;
+  };
   try {
-    return await chrome.debugger.sendCommand({ tabId }, method, params);
+    return await command();
   } catch (e) {
     if (/not attached|detached/i.test(e.message)) {
       attached.delete(tabId);
       await attach(tabId);
-      return chrome.debugger.sendCommand({ tabId }, method, params);
+      return command();
     }
     throw friendly(e);
   }
+}
+
+const DIALOG = Symbol('dialog');
+
+/** Resolve early (with DIALOG) if a dialog opens while the command is in flight. */
+function untilDialog(tabId, promise) {
+  let release;
+  const opened = new Promise((resolve) => { release = () => resolve(DIALOG); });
+  if (!dialogWaiters.has(tabId)) dialogWaiters.set(tabId, new Set());
+  dialogWaiters.get(tabId).add(release);
+  return Promise.race([promise, opened]).finally(() => dialogWaiters.get(tabId)?.delete(release));
+}
+
+/** Run a non-CDP promise (e.g. executeScript), failing with DialogError if a dialog opens meanwhile. */
+export function raceDialog(tabId, promise) {
+  return untilDialog(tabId, promise).then((out) => {
+    if (out === DIALOG) throw new DialogError(dialogs.get(tabId));
+    return out;
+  });
+}
+
+export function openDialog(tabId) {
+  return dialogs.get(tabId) || null;
+}
+
+/** Alerts that were closed automatically since the last call. */
+export function takeHandledAlerts(tabId) {
+  const list = handledAlerts.get(tabId) || [];
+  handledAlerts.delete(tabId);
+  return list;
+}
+
+/** Accept or dismiss the open dialog. Works even if the dialog opened before we attached. */
+export async function handleDialog(tabId, accept, promptText) {
+  await attach(tabId);
+  // Read it first: the "dialog closed" event can arrive before the command resolves.
+  const was = dialogs.get(tabId) || { type: 'dialog', message: '' };
+  try {
+    await chrome.debugger.sendCommand({ tabId }, 'Page.handleJavaScriptDialog', { accept, ...(promptText != null ? { promptText } : {}) });
+  } catch (e) {
+    if (/No dialog/i.test(e.message)) { dialogs.delete(tabId); return null; }
+    throw friendly(e);
+  }
+  dialogs.delete(tabId);
+  return was;
+}
+
+export class DialogError extends Error {
+  constructor(d) {
+    d ||= { type: 'dialog', message: '' };
+    super(`A ${d.type} dialog is open: "${String(d.message).slice(0, 300)}". The page is frozen until it is closed: call handle_dialog with accept=true or false.`);
+    this.dialog = d;
+  }
+}
+
+function onDialogOpening(tabId, params) {
+  const d = { type: params.type, message: params.message || '', defaultPrompt: params.defaultPrompt || '', url: params.url };
+  if (d.type === 'alert') {
+    // A plain alert only informs: close it and report the message with the next tool result.
+    if (!handledAlerts.has(tabId)) handledAlerts.set(tabId, []);
+    handledAlerts.get(tabId).push(d.message);
+    chrome.debugger.sendCommand({ tabId }, 'Page.handleJavaScriptDialog', { accept: true }).catch(() => {});
+    return;
+  }
+  dialogs.set(tabId, d);
+  for (const release of [...(dialogWaiters.get(tabId) || [])]) release();
 }
 
 export async function detach(tabId) {
@@ -52,8 +131,12 @@ function friendly(e) {
 }
 
 if (globalThis.chrome?.debugger) {
-  chrome.debugger.onDetach.addListener(({ tabId }) => attached.delete(tabId));
-  chrome.tabs.onRemoved.addListener((tabId) => attached.delete(tabId));
+  chrome.debugger.onDetach.addListener(({ tabId }) => { attached.delete(tabId); dialogs.delete(tabId); });
+  chrome.tabs.onRemoved.addListener((tabId) => { attached.delete(tabId); dialogs.delete(tabId); handledAlerts.delete(tabId); });
+  chrome.debugger.onEvent.addListener(({ tabId }, method, params) => {
+    if (method === 'Page.javascriptDialogOpening') onDialogOpening(tabId, params);
+    else if (method === 'Page.javascriptDialogClosed') dialogs.delete(tabId);
+  });
 }
 
 // ---------- input helpers ----------

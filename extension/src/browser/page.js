@@ -44,15 +44,23 @@ export async function waitForLoad(tabId, timeoutMs = 15000) {
   return chrome.tabs.get(tabId);
 }
 
-/** Run an injected function, retrying across navigations. */
+const RUN_TIMEOUT_MS = 20000;
+
+/** Run an injected function, retrying across navigations. Never hangs: dialogs and frozen pages fail with a reason. */
 export async function run(tabId, func, ...args) {
+  const open = cdp.openDialog(tabId);
+  if (open) throw new cdp.DialogError(open);
   let lastError;
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
-      const [res] = await chrome.scripting.executeScript({ target: { tabId }, func, args });
+      const exec = chrome.scripting.executeScript({ target: { tabId }, func, args });
+      const [res] = await withTimeout(cdp.raceDialog(tabId, exec), RUN_TIMEOUT_MS,
+        `The page did not respond within ${RUN_TIMEOUT_MS / 1000}s. It may be busy, or frozen by a dialog (alert/confirm) ` +
+        'that opened before HailBrowser was watching: call handle_dialog to close it, or take a screenshot to check.');
       return res?.result;
     } catch (e) {
       lastError = e;
+      if (e instanceof cdp.DialogError || /did not respond within/.test(e.message)) throw e;
       if (/Cannot access|cannot be scripted|chrome:\/\//i.test(e.message)) {
         throw new Error('Chrome blocks extensions on this page. Navigate to a normal http(s) page first.');
       }
@@ -87,8 +95,18 @@ export async function navigate(tabId, url) {
 export async function screenshot(tabId, maxWidth = 1280) {
   const metrics = await cdp.send(tabId, 'Page.getLayoutMetrics');
   const cssW = metrics.cssVisualViewport.clientWidth;
-  const shot = await withTimeout(cdp.send(tabId, 'Page.captureScreenshot', { format: 'jpeg', quality: 80, optimizeForSpeed: true }), 10000,
-    'Screenshot timed out (the tab may be minimized).');
+  const capture = (extra, ms) => withTimeout(cdp.send(tabId, 'Page.captureScreenshot', { format: 'jpeg', quality: 80, optimizeForSpeed: true, ...extra }), ms,
+    'Screenshot timed out (the tab may be minimized or its window hidden). Use read_page instead.');
+  let shot;
+  try {
+    shot = await capture({}, 4000);
+  } catch (e) {
+    if (!/timed out/.test(e.message)) throw e;
+    // Background tabs sometimes produce no new frame. Capturing "beyond the viewport" resizes the
+    // view for the capture, which forces Chrome to draw one; clip it back to what is on screen.
+    const v = metrics.cssVisualViewport;
+    shot = await capture({ captureBeyondViewport: true, clip: { x: v.pageX, y: v.pageY, width: v.clientWidth, height: v.clientHeight, scale: 1 } }, 8000);
+  }
   const blob = await (await fetch(`data:image/jpeg;base64,${shot.data}`)).blob();
   const bmp = await createImageBitmap(blob);
   const width = Math.min(Math.round(cssW), maxWidth);
@@ -134,6 +152,30 @@ export async function settleAfterInput(tabId, beforeUrl, windowMs = 400) {
     await sleep(50);
   }
   return chrome.tabs.get(tabId);
+}
+
+/**
+ * Collect tabs opened while an action runs (target=_blank links, window.open) until stop().
+ * Chrome does not reliably credit the opener (noopener links, background tabs), so every tab
+ * created during the short action window counts.
+ */
+export function watchNewTabs(tabId) {
+  const opened = [];
+  const listener = (t) => { if (t.id !== tabId) opened.push(t.id); };
+  chrome.tabs.onCreated.addListener(listener);
+  return {
+    async stop(graceMs = 0) { // callers already waited for navigation; new tabs show up within that
+      if (graceMs) await sleep(graceMs);
+      chrome.tabs.onCreated.removeListener(listener);
+      const tabs = await Promise.all(opened.map((id) => chrome.tabs.get(id).catch(() => null)));
+      return tabs.filter(Boolean);
+    },
+  };
+}
+
+export function shorten(s, n = 200) {
+  s = String(s ?? '');
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
 export const SPECIAL_INPUT_HINT = 'Use the format the browser expects, e.g. 2026-09-20 for dates, 19:30 for times, 2026-09 for months, #ff0000 for colors.';

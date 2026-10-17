@@ -38,6 +38,7 @@ export const TOOL_SCHEMAS = [
       tabId,
       viewportOnly: { type: 'boolean', description: 'Only elements currently on screen. Default false.' },
       maxElements: { type: 'number', description: 'Default 300.' },
+      compact: { type: 'boolean', description: 'Cheaper read: on-screen elements only (max 150) and less text. Default false.' },
     } },
   },
   {
@@ -67,7 +68,7 @@ export const TOOL_SCHEMAS = [
   },
   {
     name: 'type',
-    description: 'Type text. With ref, focuses that field and replaces its content (set clear=false to append). Without ref, types into the focused element. submit=true presses Enter afterwards.',
+    description: 'Type text. With ref, focuses that field and replaces its content (set clear=false to append), then reports if the page changed or rejected the value. Without ref, types into the focused element (the result says which; it fails if nothing is focused). submit=true presses Enter afterwards.',
     inputSchema: { type: 'object', properties: {
       text: { type: 'string' }, ref, tabId,
       clear: { type: 'boolean', description: 'Replace existing content. Default true when ref is given.' },
@@ -81,7 +82,7 @@ export const TOOL_SCHEMAS = [
   },
   {
     name: 'scroll',
-    description: 'Scroll the page (or the area under ref / x,y) in a direction. amount is in wheel ticks of ~120px (default 5).',
+    description: 'Scroll in a direction. With ref or x,y, scrolls the scrollable box under it (lists, side panes, chat windows); otherwise the page or the main scrollable area. amount is in wheel ticks of ~120px (default 5). Says "Nothing scrolled" when already at the end.',
     inputSchema: { type: 'object', properties: {
       direction: { type: 'string', enum: ['up', 'down', 'left', 'right'] },
       amount: { type: 'number' }, ref, x: { type: 'number' }, y: { type: 'number' }, tabId,
@@ -89,13 +90,26 @@ export const TOOL_SCHEMAS = [
   },
   {
     name: 'select_option',
-    description: 'Choose an option of a native <select> element by value or visible label.',
-    inputSchema: { type: 'object', properties: { ref, option: { type: 'string' }, tabId }, required: ['ref', 'option'] },
+    description: 'Choose an option of a native <select> element by value or visible label. For <select multiple>, option adds one choice; options sets exactly the given list.',
+    inputSchema: { type: 'object', properties: {
+      ref, option: { type: 'string' },
+      options: { type: 'array', items: { type: 'string' }, description: 'For multi-selects: the full list of options to select.' },
+      tabId,
+    }, required: ['ref'] },
   },
   {
     name: 'hover',
     description: 'Move the mouse over an element (ref) or point (x,y) to reveal menus or tooltips.',
     inputSchema: { type: 'object', properties: { ref, x: { type: 'number' }, y: { type: 'number' }, tabId } },
+  },
+  {
+    name: 'handle_dialog',
+    description: 'Close a JavaScript dialog (confirm, prompt or "leave site?") that is freezing the page. Plain alerts are closed automatically and reported in tool results.',
+    inputSchema: { type: 'object', properties: {
+      accept: { type: 'boolean', description: 'true = OK / Leave, false = Cancel / Stay. Default true.' },
+      text: { type: 'string', description: 'Answer for a prompt() dialog.' },
+      tabId,
+    } },
   },
   {
     name: 'wait',
@@ -121,5 +135,11 @@ export const TOOL_SCHEMAS = [
       },
       tabId,
     }, required: ['goal'] },
+  },
+  {
+    name: 'stop_task',
+    description: 'Stop the run_task that an agent started. Tasks the user started in the side panel can only be stopped there.',
+    mcpOnly: true,
+    inputSchema: { type: 'object', properties: {} },
   },
 ];

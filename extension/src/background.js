@@ -134,10 +134,12 @@ function clearIndicator() {
 
 // ---------- runs ----------
 
-async function startRun({ goal, mode, url, tabId, source, values }) {
+async function startRun({ goal, mode, url, tabId, source, values, signal }) {
   if (run) throw new Error(`HailBrowser is already running a ${run.mode} task. Stop it first.`);
   const settings = await getSettings();
   const controller = new AbortController();
+  // An external agent that cancels its call (or times out) stops the run it started.
+  signal?.addEventListener('abort', () => controller.abort(), { once: true });
   run = { controller, mode, source };
   broadcast(status());
   const events = [];
@@ -171,9 +173,9 @@ async function startRun({ goal, mode, url, tabId, source, values }) {
 
 const READ_ONLY = new Set(['tabs_context', 'read_page', 'find', 'get_page_text', 'screenshot', 'wait']);
 
-async function handleExternalCall(tool, args, client) {
+async function handleExternalCall(tool, args, client, signal) {
   const settings = await getSettings();
-  if (run && run.source === 'panel' && tool !== 'tabs_context') {
+  if (run && run.source === 'panel' && !['tabs_context', 'stop_task'].includes(tool)) {
     return { isError: true, content: [{ type: 'text', text: 'The user is running a HailBrowser task in the side panel. Try again when it finishes.' }] };
   }
   const entry = { tool, args: summarizeArgs(args), client: client || 'mcp', at: Date.now() };
@@ -181,15 +183,24 @@ async function handleExternalCall(tool, args, client) {
   if (activity.length > 50) activity.shift();
   broadcast({ type: 'external', entry });
 
-  if (!READ_ONLY.has(tool) && tool !== 'run_task') {
+  if (!READ_ONLY.has(tool) && !['run_task', 'stop_task'].includes(tool)) {
     const tab = await page.resolveTab(args.tabId).catch(() => null);
     if (tab && !page.isRestricted(tab.url)) pulseIndicator(tab.id, `${client || 'Agent'} is using this tab`);
   }
   const started = Date.now();
   const result = await executeTool(tool, args, {
     settings,
+    signal,
+    stopTask: async () => {
+      if (!run) return 'Nothing is running.';
+      if (run.source !== 'mcp') return `The user started this ${run.mode} task in the side panel; only they can stop it.`;
+      run.controller.abort();
+      return `Stopping the ${run.mode} run_task.`;
+    },
     runTask: async ({ goal, mode, url, tabId, values }) => {
-      const r = await startRun({ goal, mode: mode || (settings.mode === 'ultrafast' ? 'ultrafast' : 'normal'), url, tabId, source: 'mcp', values: cleanValues(values) });
+      if (typeof goal !== 'string' || !goal.trim()) throw new Error('run_task needs a goal.');
+      if (mode != null && !['normal', 'ultrafast'].includes(mode)) throw new Error('mode must be "normal" or "ultrafast".');
+      const r = await startRun({ goal, mode: mode || (settings.mode === 'ultrafast' ? 'ultrafast' : 'normal'), url, tabId, source: 'mcp', values: cleanValues(values), signal });
       const steps = r.history?.map((h) => `${h.step}. ${h.operation || h.kind} ${h.action}${h.text ? ` = ${JSON.stringify(h.text)}` : ''}`).join('\n');
       return { isError: r.status === 'error', content: [{ type: 'text', text: `${r.summary || r.status}${steps ? `\n\nSteps:\n${steps}` : ''}` }] };
     },
