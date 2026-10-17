@@ -1,158 +1,131 @@
-# Project Browser
+<p align="center"><img src="docs/logo.png" width="96" alt="HailBrowser logo" /></p>
 
-A long-horizon browser agent that lives in a Chrome side panel. You type a goal, it plans the work, runs it in your tab, remembers what it learns, and stops to ask you when something needs a human. Bring your own API key.
+# HailBrowser ⚡
 
-Built to survive tasks that take hours: the agent's state lives in IndexedDB, not in a chat history, so step 500 costs the same as step 5 and a browser restart doesn't lose the task.
+**An open-source browser agent that lives in your Chrome.** Chat with it in the side panel using any model you like, switch to **Ultrafast** mode for snappy form and search flows, or plug it into **Claude Code, OpenCode, Cursor, Codex** and any other MCP client so your coding agent can use your real, logged-in browser.
+
+<p align="center"><img src="docs/sidepanel.png" width="360" alt="HailBrowser side panel showing an Ultrafast run and an external agent's tool calls" /></p>
+
+## What you get
+
+| | |
+|---|---|
+| **Side panel agent** | Chat with the current tab. Bring your own key: Anthropic, OpenAI, OpenRouter, Gemini, Together AI, Groq, DeepSeek, Ollama, LM Studio, or any OpenAI-compatible endpoint. |
+| **Two modes** | **Normal**: a full tool-calling agent (read page, click, type, screenshots, JS). **⚡ Ultrafast**: one decision request per step, no screenshots — inspired by [jev-ultrafast](https://github.com/browser-use/jev-ultrafast). |
+| **MCP bridge** | `hailbrowser-mcp` exposes 18 browser tools to any MCP client. Several agents can share one browser at once. |
+| **Real browser, real input** | Uses `chrome.debugger` for trusted mouse/keyboard events and screenshots in background tabs. No `--remote-debugging-port`, no separate Chrome profile. |
+| **Visible & stoppable** | A glow shows which tab is being driven; every step appears in the side panel; one click stops a run. |
+
+## How Ultrafast works
+
+```
+page ──► indexed element table ──► ONE decision request ──► execute ──► observe
+          [1] combobox "Where to?"      operation: CLICK | TYPE_TEXT | SELECT
+          [2] button   "Search"                    | SCROLL | WAIT | DONE | BLOCKED
+          [3] checkbox "Nonstop"        target:    an index from the table
+```
+
+The model never writes selectors, coordinates or code — it picks an **operation** and an **observed element index**. The executor re-checks that the page and target are unchanged before every input, and retries the decision (not the action) if they changed.
+
+Three decision backends:
+
+- **Decision API** (default) — the TypeSafe `systemone` request format used by **Jev**: operation + one speculative target head per operation, answered in a single round trip with probabilities. Point the URL/model at any compatible decision model. A small text model writes field values for `TYPE_TEXT`.
+- **Letter-choice model** — small classifiers such as Together's `together/Tev1-4B-experimental` that answer one letter per question. The operation question and each operation's target question run in parallel, so a step is still one round trip.
+- **Any LLM** — one JSON call per step that returns operation, target *and* the text to type. Use a fast model (Groq, Gemini Flash, Claude Haiku).
 
 ## Install
 
+### 1. The extension
+
 ```bash
+git clone https://github.com/Shyamnath-Sankar/project-hailbrowser.git
+cd project-hailbrowser
 npm install
-npm run build
 ```
 
-Then in Chrome: `chrome://extensions` → enable Developer mode → **Load unpacked** → select the `dist/` folder. Click the extension icon to open the side panel.
+Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and pick the `extension/` folder. Click the toolbar icon (or press **Alt+H**) to open the side panel, then open **Settings** and add an API key.
 
-Configure at least one model under **Settings** before starting a task.
+Works in Chrome, Edge, Brave and other Chromium browsers (116+).
 
-Each of the three jobs — planner, executor, verifier — is a self-contained card holding its **own** provider, model, base URL and key, with its own **Test this model** button that reports the reply, latency and cost right there. So the executor can run against a local endpoint while the planner uses a hosted one, and two roles can point at two *different* OpenAI-compatible servers without colliding.
+### 2. Connect your coding agent (optional)
 
-Leaving a key blank is normal: a role borrows the key from another role on the same provider, so one Anthropic key typed once covers all three. The placeholder tells you where a borrowed value came from.
-
-| Provider | Notes |
-|---|---|
-| Anthropic, OpenAI, Gemini, OpenRouter | Key only |
-| Ollama | Local, no key needed |
-| **OpenAI-compatible** | Anything speaking `/chat/completions`: vLLM, LM Studio, llama.cpp, Together, Groq, Fireworks, Azure OpenAI, a company gateway. Paste the base URL up to `/v1` (the rest of the path is appended, and a pasted `/chat/completions` is tolerated); leave the key blank if the endpoint needs none. Azure keys are also sent as `api-key`. |
-
-A model we have no price for shows $0 spend rather than a fabricated number — the step and time budgets still bound the task.
+Print ready-to-paste config with the absolute path of your checkout:
 
 ```bash
-npm run dev        # rebuild on change
-npm run typecheck
-npm test
+npm run setup
 ```
 
-## How it works
+Then, for example:
 
-Three model roles, each with its own slot so you pay for capability only where it matters:
-
-| Role | Runs | Default |
-|---|---|---|
-| Planner | Once per task, plus on a stuck-replan | `claude-opus-5-5` |
-| Executor | Every step | `claude-sonnet-5-5` |
-| Verifier | At milestones and before accepting "done" | `claude-haiku-4-5` |
-
-### Seeing the page
-
-A content script indexes every visible interactive element — through shadow DOM and iframes — into a numbered list the model acts on by index:
-
-```
-[14] button "Start Quiz"
-[15] video (151/760s, playing)
-[16] input[radio] "B) Photosynthesis"
+```bash
+claude mcp add hailbrowser --scope user -- node /path/to/hailbrowser/mcp-server/src/index.js
 ```
 
-Text goes on every step. Screenshots (with numbered boxes drawn over the same elements) are sent only when the text isn't enough: a blank page, a repeated failure, a CAPTCHA. That default is the single biggest cost lever. **Settings → Debug** draws those boxes in the page so you can see what the agent sees.
+See [docs/connect.md](docs/connect.md) for OpenCode, Cursor, Codex, Windsurf, Gemini CLI and Claude Desktop. The side panel header turns green (**MCP connected**) once an agent has started the server.
 
-Transient API failures (429, 503, a dropped socket) retry with backoff. A four-hour task will meet one eventually, and losing that work to a blip that clears in two seconds is the worst failure this agent has.
+### Coding agent + decision model (no text-model key)
 
-Actions go through the Chrome DevTools Protocol rather than synthetic DOM events, because many sites check `isTrusted` and ignore the latter.
+The fastest setup: your coding agent (OpenCode, Claude Code…) plans, and a decision-model API drives the page.
 
-### Each step
-
-The executor returns one JSON object, and the shape is what produces the behavior:
+1. In the extension's Settings → Ultrafast, pick **Decision API (Jev)** or **Letter-choice model (Tev1)** and add that key. Leave the text helper empty.
+2. Your agent calls `run_task` with the goal **and the values to type**:
 
 ```json
-{
-  "evaluation_previous_step": "Clicked Next, lesson 2.3 loaded. Success.",
-  "memory": "Module 2: 3/5 lessons done. Quiz rules saved.",
-  "next_goal": "Play the video and wait for it to end",
-  "actions": [
-    { "type": "click", "index": 15 },
-    { "type": "wait_until", "condition": { "type": "video_ended" }, "timeoutMs": 780000 }
-  ]
-}
+{ "goal": "Search one-way flights for 1 adult", "mode": "ultrafast",
+  "values": { "From": "Zurich", "To": "London", "Date": "2026-09-20" } }
 ```
 
-Checking its own last step catches failures early. Batching safe actions cuts the number of round trips. `wait_until` polls inside the page, so a 20-minute video costs **zero** model calls while it plays — this is what makes watching a course affordable rather than theoretical.
+The decision model picks every action and element, and also which value belongs in each field (a field named like the key, e.g. "Where to?" ↔ `To`, is matched without a call). No text-generation model is used.
 
-### Video, specifically
+Ask your agent things like *"Use hailbrowser to open my GitHub notifications and summarize them"* or *"Use hailbrowser run_task in ultrafast mode to search flights from Zurich to London on Sept 20"*.
 
-Lesson video is where a course agent spends its wall-clock time, so **skipping to the end is the default** — a 20-minute lesson takes a couple of seconds.
+## Tools
 
-It doesn't work everywhere, and that's the whole design problem. Many platforms track progress with beacons sent *while* a video plays, so a jump to the end sends no intermediate progress and the lesson stays marked unwatched. Some players also refuse to seek past what you've actually watched. A course that merely *looks* finished is the worst outcome, so:
+`tabs_context` · `tabs_create` · `tabs_select` · `tabs_close` · `navigate` · `read_page` · `find` · `get_page_text` · `screenshot` · `click` · `type` · `press_key` · `scroll` · `select_option` · `hover` · `wait` · `javascript` · `run_task` (MCP only: hands a whole goal to HailBrowser's own agent)
 
-- **The skip plays out the final fraction** rather than hard-setting `currentTime = duration`, because it's the player's `ended` handler that marks most lessons complete, and a hard jump often never fires it.
-- **A player that blocks seeking is detected** — via its own `seekable` range, or by catching it yanking the position back — and the agent falls back to real playback for that video on its own.
-- **Completion is verified against the page**, not the player. A video element reaching its end isn't proof the platform counted it. If the lesson didn't register, the agent watches it properly and records that the site requires real playback, so later lessons there don't rediscover it.
-- **Captions go on either way.** When skipping, the transcript is the only record of what the lesson said — and that's what a later quiz draws on.
+`read_page` returns elements like `[ref_12] textbox "Search" value="cats"`; pass `ref_12` to `click`/`type`. Screenshot coordinates also work.
 
-Switch to **Watch them through** in settings for strict platforms, or when you'd rather not find out the hard way. That path keeps the playback handling: the wait sizes its own timeout from real remaining duration and speed, a stall (ad, "still watching?" prompt, in-video quiz, buffering failure) returns early after 45s instead of burning the full video length, and an autoplay-forced mute is reported so the agent can unmute if the lesson needs audio.
-
-Speed and stall tolerance only appear in settings when you're watching, since they mean nothing while skipping. Neither strategy costs less money — waiting is already free — the difference is only wall-clock time and risk.
-
-Every action is validated before it runs (`normalizeStep`): unknown types are dropped, a `navigate` to anything but `http(s)` is rejected, and an absurd timeout is capped.
-
-### Memory
-
-The prompt is rebuilt from storage every step and stays roughly constant in size:
+## Architecture
 
 ```
-[Goal] [Plan tree ✅⏳⬜] [Current subtask]
-[📌 Pinned instructions]      ← test rules live here
-[Recalled notes] [Your live messages]
-[Policy] [Loaded skills] [Last ~8 steps] [Page snapshot]
+Claude Code ─┐ stdio                         ┌────────── Chrome ──────────┐
+OpenCode ────┼─► hailbrowser-mcp ◄──ws:127.0.0.1:12306──► service worker   │
+Cursor ──────┘   (first one hosts,           │   ├─ tools (CDP + DOM)     │
+                  others relay)              │   ├─ Normal agent          │
+                                             │   ├─ Ultrafast agent       │
+                                             │   └─ side panel UI ◄─ you  │
+                                             └────────────────────────────┘
 ```
 
-Layers: a running scratchpad, task/course/site-scoped memories, and pinned items that appear in every prompt within their scope. When the page classifier sees an `instructions` page, the agent captures the rules and pins them — so "10 questions, 80% to pass, 3 attempts" is still in context when the quiz shows up twenty steps later.
+More in [docs/architecture.md](docs/architecture.md).
 
-Everything read off a page is stored as `source: page`. Your own words are `source: user`. Page text describes how a site works; it never carries authority over your instructions. The **Memory** tab shows everything stored, and lets you pin, unpin, or delete any of it.
+## Security model
 
-### Skills
+- API keys stay in `chrome.storage.local` and go only to the provider you call.
+- The MCP hub listens on `127.0.0.1` only and refuses WebSocket connections from web pages (any `Origin` other than `chrome-extension://`). Set `HAILBROWSER_EXTENSION_ID` to pin it to your extension ID.
+- External agents can be switched off in Settings (**Allow external agents**). The `javascript` tool can be disabled separately.
+- Page content is treated as untrusted data in all prompts. The agents are told never to enter passwords or payment details or complete purchases without explicit instruction.
+- `chrome://` pages and the Chrome Web Store can't be automated (Chrome blocks it).
 
-Progressive disclosure: only a skill's one-line description sits in the prompt, and the agent calls `load_skill` for the body when it wants it. Built-ins cover `video-lesson`, `reading-lesson`, `instructions-capture`, `quiz`, `course-mapper`, `form-fill`, `login-handoff`, and `captcha-handoff`. You can write your own in the **Skills** tab, scoped by page type and/or host.
+## Development
 
-### Surviving long runs
-
-- **Checkpoint after every action.** Steps are idempotent, so a resumed task re-reads the page and continues.
-- **Watchdog.** Chrome evicts idle MV3 service workers; a `chrome.alarms` tick every minute restarts any task still marked running. This is the difference between an agent that dies at minute 5 and one that finishes.
-- **Stuck detector.** Three identical page fingerprints → a warning that forces a different approach. Four → a full replan that preserves completed work.
-- **Verifier.** A `done` claim is checked against the page before it's accepted; a rejected claim sends the agent back to work.
-- **Budgets.** Dollars, steps, and minutes. Hitting one pauses and asks rather than quitting.
-
-### Stopping for you
-
-`ask_human` covers logins, OTPs, CAPTCHAs, missing information, and anything irreversible. You get a desktop notification, the task waits in storage, and it resumes when you answer — hours later is fine. **Take over** pauses the loop and detaches the debugger so you can drive the tab yourself, then **Resume** hands it back.
-
-Independently of what the model decides, a click on a control labeled like `submit`, `pay`, `delete`, or `send` is gated on confirmation while that policy is on.
-
-## Limitations
-
-Worth knowing before you rely on it:
-
-- **Prompt injection is the real risk.** A page can contain hidden text aimed at your agent. Page content is treated as data and page-sourced memory is marked as such, but this is mitigation, not a solution. Keep confirm-before-submit on.
-- **API keys are stored in `chrome.storage.local`**, which is not strongly protected — anything with access to your browser profile directory can read them. Use rotatable keys and set a spend cap with your provider.
-- **The debugger banner** ("… is debugging this browser") is shown by Chrome while a task runs and can't be hidden.
-- **Some pages are off-limits** to any extension: `chrome://`, the Web Store, PDF viewer. The agent reports this and navigates away rather than looping.
-- **Anti-bot measures.** Some sites detect automation; CAPTCHAs become a handoff.
-- **Automated test-taking** defaults to asking you first. Many platforms and institutions forbid it — that setting is yours to make deliberately.
-
-## Layout
-
+```bash
+npm test                                  # syntax check + unit/integration tests (no browser, no API calls)
+npx puppeteer browsers install chrome     # once
+node scripts/e2e-browser.mjs              # real Chrome + extension + MCP server + scripted fake model
+npm run sync-schemas                      # after editing extension/src/tools/schemas.js
 ```
-src/
-  shared/          types, message envelopes, defaults
-  content/         indexer, classifier, media, waiters, extract, overlay
-  background/
-    orchestrator.ts  task engine: loop, checkpoints, stuck detection, budgets
-    context.ts       prompt builder (fixed-size context)
-    dispatch.ts      action execution + the irreversible-action gate
-    perception.ts    multi-frame snapshot merge
-    agents/          planner, executor (+ validation), verifier
-    memory/          Dexie schema, store, recall
-    llm/             anthropic, openai-compat, gemini + router
-    cdp/             CDP input, screenshots
-    skills/          built-ins + router
-  sidepanel/       React UI: chat, plan, steps, memory, skills, settings
-```
+
+No build step: the extension is plain ES modules; reload it in `chrome://extensions` after edits.
+
+## Limits
+
+Shadow DOM, cross-origin iframes, canvas apps, file uploads and pop-up windows are not fully supported yet. Ultrafast sees only on-screen elements (it scrolls to find more). Model `DONE` is a claim, not proof — verify important outcomes.
+
+## Credits
+
+Ultrafast's snapshot, action-space and decision-loop design is adapted from [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast) (MIT). Ideas on background tabs and agent setup from [browser-use/browser-harness](https://github.com/browser-use/browser-harness) (MIT). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## License
+
+MIT

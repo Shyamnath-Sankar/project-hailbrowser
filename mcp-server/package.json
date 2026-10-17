@@ -1,0 +1,18 @@
+{
+  "name": "hailbrowser-mcp",
+  "version": "0.1.0",
+  "description": "MCP server that lets Claude Code, OpenCode, Cursor and other agents drive your real Chrome through the HailBrowser extension.",
+  "license": "MIT",
+  "type": "module",
+  "bin": { "hailbrowser-mcp": "src/index.js" },
+  "files": ["src"],
+  "keywords": ["mcp", "browser", "chrome", "agent", "claude-code", "opencode", "browser-automation"],
+  "scripts": {
+    "prepack": "node ../scripts/sync-schemas.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "ws": "^8.18.0"
+  },
+  "engines": { "node": ">=18" }
+}

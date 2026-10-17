@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "HailBrowser",
+  "version": "0.1.0",
+  "description": "Open-source browser agent. Sidebar chat with your own models, an ultrafast decision mode, and an MCP bridge for Claude Code, OpenCode and more.",
+  "minimum_chrome_version": "116",
+  "permissions": ["debugger", "tabs", "scripting", "storage", "sidePanel", "alarms"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "sidepanel/index.html"
+  },
+  "action": {
+    "default_title": "Open HailBrowser",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": { "default": "Alt+H" },
+      "description": "Open the HailBrowser side panel"
+    }
+  }
+}
