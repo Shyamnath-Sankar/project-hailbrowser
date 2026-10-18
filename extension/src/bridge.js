@@ -30,9 +30,22 @@ export class Bridge {
     if (this.enabled && !this.ws) this.connect();
   }
 
-  connect() {
+  async connect() {
     clearTimeout(this.timer);
-    if (!this.enabled || this.ws) return;
+    if (!this.enabled || this.ws || this.probing) return;
+    // Chrome logs every refused WebSocket as an extension error (try/catch can't hide it), so
+    // first check quietly with a plain HTTP request whether a hub is listening at all.
+    this.probing = true;
+    const port = this.port;
+    try {
+      await fetch(`http://127.0.0.1:${port}/`, { cache: 'no-store', signal: AbortSignal.timeout(2000) });
+    } catch {
+      this.probing = false;
+      return this.retry(); // no coding agent running yet: try again later, silently
+    } finally {
+      this.probing = false;
+    }
+    if (!this.enabled || this.ws || port !== this.port) return;
     let ws;
     try {
       ws = new WebSocket(`ws://127.0.0.1:${this.port}/?role=extension`);

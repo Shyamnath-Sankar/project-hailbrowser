@@ -25,6 +25,15 @@
     </button>
   </header>
 
+  <section id="control" class="control" hidden aria-live="polite">
+    <div class="control-head">
+      <span class="live" aria-hidden="true"></span>
+      <span id="control-label">Controlling</span>
+      <button id="release-all" class="link" title="Take HailBrowser's hands off these tabs (they stay open)">Release</button>
+    </div>
+    <ul id="control-tabs"></ul>
+  </section>
+
   <nav class="modes" role="tablist" aria-label="Mode">
     <button role="tab" data-mode="normal" aria-selected="true">
       <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Chat
@@ -67,6 +76,7 @@
         <p class="hint">Used by Chat and Tasks. Paste a key from your provider; it stays in this browser.</p>
         <label>Provider <select name="normal.provider" data-providers></select></label>
         <label data-key-for="normal.provider">API key <input type="password" data-key-input="normal.provider" spellcheck="false" placeholder="Paste your API key" /></label>
+          <label data-url-for="normal.provider" hidden>Base URL <input data-url-input="normal.provider" spellcheck="false" placeholder="https://your-endpoint/v1" /></label>
         <label>Model <input name="normal.model" list="models-normal.provider" spellcheck="false" /></label>
         <label class="check"><input type="checkbox" name="normal.vision" /> Let it look at screenshots</label>
       </div></div>
@@ -91,17 +101,20 @@
         <div data-show="ultrafast.backend=choice">
           <label>Provider <select name="ultrafast.choiceProvider" data-providers></select></label>
           <label data-key-for="ultrafast.choiceProvider">API key <input type="password" data-key-input="ultrafast.choiceProvider" spellcheck="false" placeholder="Paste your API key" /></label>
+          <label data-url-for="ultrafast.choiceProvider" hidden>Base URL <input data-url-input="ultrafast.choiceProvider" spellcheck="false" placeholder="https://your-endpoint/v1" /></label>
           <label>Model <input name="ultrafast.choiceModel" list="models-ultrafast.choiceProvider" spellcheck="false" /></label>
         </div>
         <div data-show="ultrafast.backend=llm">
           <label>Provider <select name="ultrafast.decisionProvider" data-providers></select></label>
           <label data-key-for="ultrafast.decisionProvider">API key <input type="password" data-key-input="ultrafast.decisionProvider" spellcheck="false" placeholder="Paste your API key" /></label>
+          <label data-url-for="ultrafast.decisionProvider" hidden>Base URL <input data-url-input="ultrafast.decisionProvider" spellcheck="false" placeholder="https://your-endpoint/v1" /></label>
           <label>Model <input name="ultrafast.decisionModel" list="models-ultrafast.decisionProvider" spellcheck="false" /></label>
         </div>
         <details><summary>Text helper (writes what to type)</summary>
           <p class="hint">Not needed when an agent passes values to run_task.</p>
           <label>Provider <select name="ultrafast.textProvider" data-providers></select></label>
           <label data-key-for="ultrafast.textProvider">API key <input type="password" data-key-input="ultrafast.textProvider" spellcheck="false" placeholder="Paste your API key" /></label>
+          <label data-url-for="ultrafast.textProvider" hidden>Base URL <input data-url-input="ultrafast.textProvider" spellcheck="false" placeholder="https://your-endpoint/v1" /></label>
           <label>Model <input name="ultrafast.textModel" list="models-ultrafast.textProvider" spellcheck="false" /></label>
         </details>
       </div></div>
@@ -127,6 +140,7 @@
 
       <div class="card"><div class="card-in">
         <h3>Safety</h3>
+        <label class="check"><input type="checkbox" name="tools.groupTabs" /> Put controlled tabs in a "HailBrowser" tab group</label>
         <label class="check"><input type="checkbox" name="tools.showIndicator" /> Glow on tabs being controlled</label>
         <label class="check"><input type="checkbox" name="tools.allowJavascript" /> Allow running page scripts (javascript tool)</label>
         <details><summary>All API keys</summary><div id="keys"></div></details>

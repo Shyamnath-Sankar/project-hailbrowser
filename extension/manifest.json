@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Open-source browser agent. Sidebar chat with your own models, an ultrafast decision mode, and an MCP bridge for Claude Code, OpenCode and more.",
   "minimum_chrome_version": "116",
-  "permissions": ["debugger", "tabs", "scripting", "storage", "sidePanel", "alarms"],
+  "permissions": ["debugger", "tabs", "scripting", "storage", "sidePanel", "alarms", "tabGroups"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "src/background.js",

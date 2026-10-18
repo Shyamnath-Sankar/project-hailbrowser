@@ -59,8 +59,13 @@ function markdown(src) {
 
 // ---------- setup state ----------
 
+// Providers whose address is the user's own (an OpenAI-compatible endpoint or a local server).
+const URL_PROVIDERS = new Set(['custom', 'ollama', 'lmstudio']);
+const urlFor = (provider) => settings.providers?.[provider]?.baseUrl || '';
+
 function keyFor(provider) {
   const p = PROVIDERS[provider];
+  if (p && !p.baseUrl && !urlFor(provider)) return false; // custom endpoint without an address
   return !p || p.keyless || !!settings.providers?.[provider]?.apiKey;
 }
 
@@ -86,14 +91,22 @@ function setupCard(kind) {
     <p class="hint">Pick a provider and paste your API key. It's stored only in this browser.</p>
     <label>Provider <select data-setup="provider">${options}</select></label>
     <label>API key <input type="password" data-setup="key" placeholder="Paste your API key" spellcheck="false" /></label>
+    <label data-setup-url ${URL_PROVIDERS.has(settings.normal.provider) ? '' : 'hidden'}>Base URL
+      <input data-setup="url" value="${esc(urlFor(settings.normal.provider))}" placeholder="${esc(PROVIDERS[settings.normal.provider]?.baseUrl || 'https://your-endpoint/v1')}" spellcheck="false" /></label>
     <label>Model <input data-setup="model" value="${esc(settings.normal.model)}" spellcheck="false" /></label>
     <div class="row"><button class="btn primary" data-act="save-setup">Save &amp; start</button></div>`, 'setup');
 }
 
 feed.addEventListener('change', (e) => {
   if (e.target.matches('[data-setup="provider"]')) {
-    const first = PROVIDERS[e.target.value]?.models?.[0];
+    const id = e.target.value;
+    const first = PROVIDERS[id]?.models?.[0];
     if (first) feed.querySelector('[data-setup="model"]').value = first;
+    feed.querySelector('[data-setup-url]').hidden = !URL_PROVIDERS.has(id);
+    const url = feed.querySelector('[data-setup="url"]');
+    url.value = urlFor(id);
+    url.placeholder = PROVIDERS[id]?.baseUrl || 'https://your-endpoint/v1';
+    feed.querySelector('[data-setup="key"]').placeholder = PROVIDERS[id]?.keyless ? 'API key (only if your endpoint needs one)' : 'Paste your API key';
   }
 });
 
@@ -106,10 +119,13 @@ feed.addEventListener('click', async (e) => {
     const provider = feed.querySelector('[data-setup="provider"]').value;
     const keyBox = feed.querySelector('[data-setup="key"]');
     const model = feed.querySelector('[data-setup="model"]').value.trim();
+    const urlBox = feed.querySelector('[data-setup="url"]');
     if (!keyBox.value.trim() && !PROVIDERS[provider].keyless) return keyBox.focus();
+    if (!PROVIDERS[provider].baseUrl && !urlBox.value.trim()) return urlBox.focus();
     settings.normal.provider = provider;
     settings.normal.model = model || PROVIDERS[provider].models[0] || '';
-    settings.providers[provider] = { ...settings.providers[provider], apiKey: keyBox.value.trim() };
+    settings.providers[provider] = { ...settings.providers[provider], apiKey: keyBox.value.trim(),
+      ...(URL_PROVIDERS.has(provider) ? { baseUrl: urlBox.value.trim().replace(/\/+$/, '') } : {}) };
     await saveSettings(settings);
     renderAll();
   } else if (act === 'suggest') {
@@ -313,6 +329,7 @@ function onMessage(msg) {
     return;
   }
   if (msg.type === 'event') return msg.source === 'task' ? taskActivity(msg.event) : renderEvent(msg.event, msg.source);
+  if (msg.type === 'controlled') return renderControlled(msg.tabs);
   if (msg.type === 'external') return renderExternal(msg.entry);
   if (msg.type === 'external_result') return finishExternal(msg);
   if (msg.type === 'reset_done') { chatView.innerHTML = ''; renderChatIntro(); }
@@ -338,9 +355,51 @@ function renderStatus({ bridge, running: r }) {
   }
 }
 
+// ---------- which tabs are being controlled ----------
+
+let myWindow = null; // no top-level await here: messages may arrive while the module is suspended
+chrome.windows.getCurrent().then((w) => { myWindow = w.id; }).catch(() => {});
+const AGENT_NAMES = { 'claude-code': 'Claude Code', opencode: 'OpenCode', cursor: 'Cursor', codex: 'Codex' };
+const agentName = (c) => {
+  const k = String(c || '').toLowerCase();
+  for (const [key, v] of Object.entries(AGENT_NAMES)) if (k.startsWith(key)) return v;
+  return c ? String(c).replace(/[-_]+/g, ' ') : 'agent';
+};
+const hostOf = (u) => { try { return new URL(u).host; } catch { return ''; } };
+
+function renderControlled(tabs = []) {
+  const box = $('#control');
+  box.hidden = !tabs.length;
+  if (!tabs.length) return;
+  const busy = tabs.some((t) => t.busy);
+  box.classList.toggle('busy', busy);
+  $('#control-label').textContent = busy ? `${tabs.find((t) => t.busy).who} is working` : `Controlling ${tabs.length} tab${tabs.length > 1 ? 's' : ''}`;
+  const list = $('#control-tabs');
+  list.innerHTML = '';
+  for (const t of tabs.slice(0, 4)) {
+    const where = t.windowId === myWindow ? 'this window' : t.windows > 1 ? `window ${t.window}` : '';
+    const li = el('li', t.busy ? 'busy' : '');
+    li.innerHTML = `<button class="tab-row" title="Show this tab">
+        ${t.favIconUrl ? `<img src="${esc(t.favIconUrl)}" alt="" width="16" height="16">` : '<span class="fav"></span>'}
+        <span class="t-main"><span class="t-title">${esc(t.title)}</span>
+        <span class="t-meta">${esc(t.who)} · ${esc(hostOf(t.url) || 'new tab')}${where ? ` · ${where}` : ''}</span></span>
+      </button>
+      <button class="t-x" title="Release this tab" aria-label="Release this tab"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>`;
+    li.querySelector('img')?.addEventListener('error', (ev) => ev.target.replaceWith(el('span', 'fav')));
+    li.querySelector('.tab-row').onclick = async () => {
+      await chrome.tabs.update(t.id, { active: true }).catch(() => {});
+      await chrome.windows.update(t.windowId, { focused: true }).catch(() => {});
+    };
+    li.querySelector('.t-x').onclick = () => port.postMessage({ type: 'release', tabId: t.id });
+    list.appendChild(li);
+  }
+  if (tabs.length > 4) list.appendChild(el('li', 'more', `+${tabs.length - 4} more`));
+}
+$('#release-all').onclick = () => port.postMessage({ type: 'release' });
+
 function renderExternal(entry) {
   if (entry.tool === 'run_task') return;
-  externalSteps.push(step(chatView, '⟳', `<span class="badge ext">agent</span>${esc(entry.tool)}`, argSummary(entry.args), '', 'ext pending'));
+  externalSteps.push(step(chatView, '⟳', `<span class="badge ext">${esc(agentName(entry.client))}</span>${esc(entry.tool)}`, argSummary(entry.args), '', 'ext pending'));
 }
 function finishExternal({ entry, isError, ms: took }) {
   if (entry.tool === 'run_task') return;
@@ -453,7 +512,15 @@ function refreshDerived() {
   for (const keyInput of form.querySelectorAll('[data-key-input]')) {
     const provider = form.elements[keyInput.dataset.keyInput]?.value;
     if (document.activeElement !== keyInput) keyInput.value = settings.providers?.[provider]?.apiKey || '';
-    keyInput.placeholder = PROVIDERS[provider]?.keyless ? 'Not needed for local models' : `Paste your ${PROVIDERS[provider]?.label} API key`;
+    keyInput.placeholder = provider === 'custom' ? 'Only if your endpoint needs one'
+      : PROVIDERS[provider]?.keyless ? 'Not needed for local models' : `Paste your ${PROVIDERS[provider]?.label} API key`;
+  }
+  // Base URL fields appear for OpenAI-compatible endpoints and local servers.
+  for (const urlInput of form.querySelectorAll('[data-url-input]')) {
+    const provider = form.elements[urlInput.dataset.urlInput]?.value;
+    urlInput.closest('label').hidden = !URL_PROVIDERS.has(provider);
+    if (document.activeElement !== urlInput) urlInput.value = urlFor(provider);
+    urlInput.placeholder = PROVIDERS[provider]?.baseUrl || 'https://your-endpoint/v1 (e.g. https://api.example.com/v1)';
   }
 }
 
@@ -480,6 +547,8 @@ form.addEventListener('input', (e) => {
   const f = e.target;
   if (f.dataset.keyInput) {
     set(settings, `providers.${form.elements[f.dataset.keyInput].value}.apiKey`, f.value.trim());
+  } else if (f.dataset.urlInput) {
+    set(settings, `providers.${form.elements[f.dataset.urlInput].value}.baseUrl`, f.value.trim().replace(/\/+$/, ''));
   } else if (f.name) {
     set(settings, f.name, f.type === 'checkbox' ? f.checked : f.type === 'number' ? Number(f.value) : f.value.trim());
     if (f.tagName === 'SELECT' && /(^normal\.provider$|Provider$)/.test(f.name)) {

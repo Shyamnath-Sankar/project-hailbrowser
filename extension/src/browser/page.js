@@ -3,10 +3,17 @@ import * as cdp from './cdp.js';
 import * as inj from './inject.js';
 
 let currentTabId = null;
+let currentTabListener = null;
 const shotScale = new Map(); // tabId -> CSS px per screenshot px
 
 export function setCurrentTab(tabId) {
   currentTabId = tabId;
+  currentTabListener?.(tabId);
+}
+
+/** Called whenever an agent switches to, opens or navigates a tab. */
+export function onCurrentTab(fn) {
+  currentTabListener = fn;
 }
 
 const BLOCKED = /^(chrome|edge|brave|about|chrome-extension|devtools|view-source):|^https:\/\/chrome(webstore)?\.google\.com\/(webstore)?/i;

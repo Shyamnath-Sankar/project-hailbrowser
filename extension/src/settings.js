@@ -49,7 +49,7 @@ export const DEFAULTS = {
   },
   tasks: { stepsPerSubtask: 40, maxTotalSteps: 400 },
   bridge: { enabled: true, port: 12306 },
-  tools: { allowJavascript: true, showIndicator: true },
+  tools: { allowJavascript: true, showIndicator: true, groupTabs: true },
 };
 
 function merge(base, patch) {

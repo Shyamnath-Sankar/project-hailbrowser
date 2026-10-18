@@ -75,10 +75,47 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .modes button svg { width: 15px; height: 15px; }
 .modes button:hover { color: var(--text); border-color: var(--line-hi); }
 .modes button[aria-selected="true"] { color: var(--text); background: var(--card-3); border-color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
-.mode-help { margin: 8px 16px 2px; font-size: 12px; color: var(--faint); min-height: 18px; }
+.mode-help { margin: 8px 16px 0; font-size: 12px; color: var(--faint); min-height: 18px; }
+
+/* ---------- controlled tabs (mirrors the "HailBrowser" tab group) ---------- */
+.control {
+  margin: 2px 14px 6px; padding: 8px 8px 6px 10px; border-radius: 14px; position: relative;
+  border: 1px solid rgba(138, 123, 247, .35);
+  background: linear-gradient(135deg, rgba(138, 123, 247, .14), rgba(124, 198, 255, .05));
+}
+.control::before { content: ""; position: absolute; left: -1px; top: 10px; bottom: 10px; width: 3px; border-radius: 3px; background: #a78bfa; }
+.control.busy { border-color: transparent; background:
+  linear-gradient(var(--bg-2), var(--bg-2)) padding-box,
+  linear-gradient(100deg, #a78bfa, #7cc6ff, #f8c8ef, #a78bfa) border-box; background-size: auto, 300% 100%;
+  animation: flow 3s linear infinite; }
+.control-head { display: flex; align-items: center; gap: 7px; font-size: 11.5px; font-weight: 600; color: var(--accent-2); margin-bottom: 4px; }
+.control-head .live { width: 7px; height: 7px; border-radius: 50%; background: #a78bfa; box-shadow: 0 0 0 3px rgba(167, 139, 250, .22); }
+.control.busy .live { animation: pulse 1.2s ease-in-out infinite; }
+.link { all: unset; margin-left: auto; cursor: pointer; font-size: 11.5px; color: var(--faint); padding: 2px 6px; border-radius: 6px; }
+.link:hover { color: var(--text); background: rgba(255, 255, 255, .06); }
+.control ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.control li { display: flex; align-items: center; gap: 4px; border-radius: 9px; }
+.control li:hover { background: rgba(255, 255, 255, .04); }
+.control li.more { padding: 2px 8px; font-size: 11px; color: var(--faint); }
+.tab-row { all: unset; cursor: pointer; flex: 1; min-width: 0; display: flex; align-items: center; gap: 9px; padding: 4px 6px; }
+.tab-row img, .tab-row .fav { width: 16px; height: 16px; flex: none; border-radius: 4px; }
+.tab-row .fav { background: linear-gradient(135deg, #8a7bf7, #7cc6ff); }
+.t-main { min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.t-title { font-size: 12.5px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.t-meta { font-size: 10.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.control li.busy .t-meta { color: var(--cyan); }
+.t-x { all: unset; cursor: pointer; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 7px; color: var(--faint); opacity: 0; }
+.t-x svg { width: 13px; height: 13px; }
+.control li:hover .t-x, .t-x:focus-visible { opacity: 1; }
+.t-x:hover { color: var(--text); background: rgba(255, 255, 255, .08); }
+@keyframes flow { to { background-position: 0 0, 300% 0; } }
+@keyframes pulse { 50% { box-shadow: 0 0 0 6px rgba(167, 139, 250, 0); opacity: .6; } }
 
 /* ---------- feed ---------- */
-main { flex: 1; overflow-y: auto; padding: 8px 14px 18px; display: flex; flex-direction: column; gap: 10px; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+main {
+  flex: 1; overflow-y: auto; padding: 10px 14px 18px; display: flex; flex-direction: column; gap: 10px; scrollbar-width: thin; scrollbar-color: var(--line) transparent;
+  mask-image: linear-gradient(to bottom, transparent 0, #000 14px, #000 calc(100% - 10px), transparent 100%);
+}
 
 .hero h2 { margin: 2px 0 6px; font-size: 18px; letter-spacing: -.02em; }
 .hero p { margin: 0 0 12px; color: var(--muted); }
@@ -105,18 +142,22 @@ main { flex: 1; overflow-y: auto; padding: 8px 14px 18px; display: flex; flex-di
 .msg.assistant a { color: var(--cyan); }
 
 .step {
-  display: flex; align-items: flex-start; gap: 8px; padding: 7px 10px; border-radius: 10px;
-  background: rgba(255, 255, 255, .025); border: 1px solid rgba(255, 255, 255, .04); font-size: 12.5px; color: var(--muted);
+  display: flex; align-items: flex-start; gap: 8px; padding: 5px 10px 5px 9px; border-radius: 0 9px 9px 0;
+  background: linear-gradient(90deg, rgba(138, 123, 247, .07), rgba(138, 123, 247, 0) 70%);
+  border: 0; border-left: 2px solid rgba(138, 123, 247, .45); font-size: 12.5px; color: var(--muted);
 }
+.step + .step { margin-top: -6px; }
+.step:hover { background: linear-gradient(90deg, rgba(138, 123, 247, .13), rgba(138, 123, 247, .02) 80%); }
 .step .ico { width: 16px; text-align: center; color: var(--accent-2); }
 .step .body { flex: 1; min-width: 0; }
 .step .what { color: var(--text); font-weight: 560; }
 .step .arg { font: 11.5px var(--mono); overflow-wrap: anywhere; color: var(--muted); }
 .step .meta { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.step.err { border-color: rgba(255, 122, 138, .35); background: rgba(255, 122, 138, .07); }
+.step.err { border-left-color: var(--err); background: linear-gradient(90deg, rgba(255, 122, 138, .12), rgba(255, 122, 138, 0) 80%); }
 .step.err .ico { color: var(--err); }
 .step.pending .ico { animation: spin 1s linear infinite; }
-.step.ext { border-color: rgba(124, 198, 255, .25); }
+.step.ext { border-left-color: rgba(124, 198, 255, .55); background: linear-gradient(90deg, rgba(124, 198, 255, .07), rgba(124, 198, 255, 0) 70%); }
+.step.pending { border-left-color: var(--accent); }
 .step.muted { opacity: .7; }
 .step details { margin-top: 3px; }
 .step summary { cursor: pointer; color: var(--faint); font-size: 11px; }
@@ -208,7 +249,8 @@ textarea:focus, input:focus, select:focus { border-color: var(--accent); }
 .caption { margin-top: 6px; font-size: 11px; color: var(--faint); text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ---------- settings ---------- */
-.settings { position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; background: var(--bg); }
+/* body > * sets position: relative, so the overlay needs the more specific selector to stay on top. */
+body > .settings { position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; background: var(--bg); }
 .settings form { flex: 1; overflow-y: auto; padding: 6px 14px 24px; display: flex; flex-direction: column; gap: 12px; }
 .saved { font-size: 12px; color: var(--ok); }
 .hint { margin: 2px 0 10px; color: var(--faint); font-size: 12px; }

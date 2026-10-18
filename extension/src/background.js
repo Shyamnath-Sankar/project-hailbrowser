@@ -6,6 +6,7 @@ import { runNormal } from './agent/normal.js';
 import { runUltrafast } from './agent/ultrafast.js';
 import { applyAnswer, newTask, runTask } from './agent/tasks.js';
 import * as page from './browser/page.js';
+import * as groups from './browser/groups.js';
 
 const ports = new Set();
 let bridgeConnected = false;
@@ -37,6 +38,7 @@ async function executeTask() {
   broadcast(status());
   const emit = (event) => broadcast({ type: 'event', source: 'task', event });
   try {
+    driver = 'Tasks';
     const tab = await page.resolveTab();
     pulseIndicator(tab.id, 'HailBrowser is working on your task', 0);
     await runTask({ task, settings, signal: controller.signal, emit, save: saveTask });
@@ -116,10 +118,31 @@ applySettings();
 
 // ---------- indicator ----------
 
+// Who is driving right now ("Claude Code", "Chat"...), for the tab group and the panel.
+let driver = 'HailBrowser';
+groups.onChange((tabs) => broadcast({ type: 'controlled', tabs }));
+page.onCurrentTab((tabId) => claimTab(tabId));
+
+async function claimTab(tabId, who = driver) {
+  if (tabId == null) return;
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  const url = tab?.pendingUrl || tab?.url || '';
+  if (!tab || (page.isRestricted(url) && !url.startsWith('about:blank'))) return; // new agent tabs start blank
+  const s = await getSettings();
+  await groups.claim(tabId, who, { group: s.tools.groupTabs !== false });
+}
+
 const indicator = { tabId: null, timer: null };
 async function pulseIndicator(tabId, label, holdMs = 2500) {
+  if (tabId == null) return;
+  claimTab(tabId);
+  groups.setBusy(tabId);
   const s = await getSettings();
-  if (!s.tools.showIndicator || tabId == null) return;
+  if (!s.tools.showIndicator) {
+    clearTimeout(indicator.timer);
+    if (holdMs) indicator.timer = setTimeout(() => groups.setBusy(null), holdMs);
+    return;
+  }
   if (indicator.tabId !== null && indicator.tabId !== tabId) page.setIndicator(indicator.tabId, false);
   indicator.tabId = tabId;
   page.setIndicator(tabId, true, label);
@@ -128,19 +151,21 @@ async function pulseIndicator(tabId, label, holdMs = 2500) {
 }
 function clearIndicator() {
   clearTimeout(indicator.timer);
+  groups.setBusy(null);
   if (indicator.tabId !== null) page.setIndicator(indicator.tabId, false);
   indicator.tabId = null;
 }
 
 // ---------- runs ----------
 
-async function startRun({ goal, mode, url, tabId, source, values, signal }) {
+async function startRun({ goal, mode, url, tabId, source, values, signal, who }) {
   if (run) throw new Error(`HailBrowser is already running a ${run.mode} task. Stop it first.`);
   const settings = await getSettings();
   const controller = new AbortController();
   // An external agent that cancels its call (or times out) stops the run it started.
   signal?.addEventListener('abort', () => controller.abort(), { once: true });
   run = { controller, mode, source };
+  driver = who || (mode === 'ultrafast' ? 'Fast' : 'Chat');
   broadcast(status());
   const events = [];
   const emit = (event) => {
@@ -183,9 +208,11 @@ async function handleExternalCall(tool, args, client, signal) {
   if (activity.length > 50) activity.shift();
   broadcast({ type: 'external', entry });
 
-  if (!READ_ONLY.has(tool) && !['run_task', 'stop_task'].includes(tool)) {
+  if (!run) driver = groups.agentName(client);
+  // Tab management acts on another tab than the current one; those tabs are claimed when selected.
+  if (!READ_ONLY.has(tool) && !['run_task', 'stop_task', 'tabs_create', 'tabs_select', 'tabs_close'].includes(tool)) {
     const tab = await page.resolveTab(args.tabId).catch(() => null);
-    if (tab && !page.isRestricted(tab.url)) pulseIndicator(tab.id, `${client || 'Agent'} is using this tab`);
+    if (tab && !page.isRestricted(tab.url)) pulseIndicator(tab.id, `${groups.agentName(client)} is using this tab`);
   }
   const started = Date.now();
   const result = await executeTool(tool, args, {
@@ -200,7 +227,7 @@ async function handleExternalCall(tool, args, client, signal) {
     runTask: async ({ goal, mode, url, tabId, values }) => {
       if (typeof goal !== 'string' || !goal.trim()) throw new Error('run_task needs a goal.');
       if (mode != null && !['normal', 'ultrafast'].includes(mode)) throw new Error('mode must be "normal" or "ultrafast".');
-      const r = await startRun({ goal, mode: mode || (settings.mode === 'ultrafast' ? 'ultrafast' : 'normal'), url, tabId, source: 'mcp', values: cleanValues(values), signal });
+      const r = await startRun({ goal, mode: mode || (settings.mode === 'ultrafast' ? 'ultrafast' : 'normal'), url, tabId, source: 'mcp', values: cleanValues(values), signal, who: groups.agentName(client) });
       const steps = r.history?.map((h) => `${h.step}. ${h.operation || h.kind} ${h.action}${h.text ? ` = ${JSON.stringify(h.text)}` : ''}`).join('\n');
       return { isError: r.status === 'error', content: [{ type: 'text', text: `${r.summary || r.status}${steps ? `\n\nSteps:\n${steps}` : ''}` }] };
     },
@@ -237,12 +264,15 @@ chrome.runtime.onConnect.addListener((port) => {
   port.postMessage(status());
   port.postMessage({ type: 'activity', entries: activity });
   taskLoaded.then(() => port.postMessage({ type: 'task', task }));
+  groups.list().then((tabs) => port.postMessage({ type: 'controlled', tabs }));
   port.onDisconnect.addListener(() => ports.delete(port));
   port.onMessage.addListener(async (msg) => {
     if (msg.type.startsWith('task_')) {
       handleTaskMessage(msg).catch((e) => port.postMessage({ type: 'event', source: 'task', event: { type: 'error', text: e.message } }));
     } else if (msg.type === 'run') {
       startRun({ goal: msg.goal, mode: msg.mode, source: 'panel' }).catch((e) => broadcast({ type: 'event', source: 'panel', event: { type: 'error', text: e.message } }));
+    } else if (msg.type === 'release') {
+      groups.release(msg.tabId);
     } else if (msg.type === 'stop') {
       run?.controller.abort();
     } else if (msg.type === 'reset') {

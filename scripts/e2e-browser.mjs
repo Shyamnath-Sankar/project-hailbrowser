@@ -267,10 +267,26 @@ try {
   const panel = await browser.newPage();
   await panel.setViewport({ width: 400, height: 720 });
   await panel.goto(`chrome-extension://${extId}/sidepanel/index.html`);
-  await call('tabs_select', { tabId: Number(/Opened and selected Tab (\d+)/.exec(opened.text)[1]) });
+  const agentTab = Number(/Opened and selected Tab (\d+)/.exec(opened.text)[1]);
+  await call('tabs_select', { tabId: agentTab });
+
+  // Controlled tabs live in one purple "HailBrowser" tab group, mirrored in the panel.
+  const groupOf = () => sw.evaluate(async (id) => {
+    const t = await chrome.tabs.get(id);
+    return t.groupId === -1 ? null : chrome.tabGroups.get(t.groupId).then((g) => ({ title: g.title, color: g.color }));
+  }, agentTab);
+  const grouped = await groupOf();
+  assert.ok(grouped && /HailBrowser/.test(grouped.title) && grouped.color === 'purple', JSON.stringify(grouped));
+  await panel.waitForSelector('#control:not([hidden]) .tab-row');
+  assert.match(await panel.$eval('#control', (e) => e.textContent), /e2e/i);
+  await panel.click('#release-all');
+  for (let i = 0; i < 30 && (await groupOf()); i++) await new Promise((r) => setTimeout(r, 100));
+  assert.equal(await groupOf(), null, 'Release takes the tab out of the group');
+  await panel.waitForSelector('#control[hidden]');
+  step(`controlled tabs grouped as "${grouped.title}" (${grouped.color}), listed in the panel, released on demand`);
 
   await call('navigate', { url: base });
-  const fast = await call('run_task', { goal: 'Search for London', mode: 'ultrafast' });
+  const fast =await call('run_task', { goal: 'Search for London', mode: 'ultrafast' });
   assert.match(fast.text, /Done/);
   assert.match((await call('get_page_text')).text, /Searched: London/);
   step(`ultrafast run_task: ${fast.text.split('\n')[0]}`);
@@ -310,6 +326,23 @@ try {
   await panel.evaluate(() => document.querySelector('#open-settings').click());
   await panel.screenshot({ path: 'docs/settings.png' });
   step('side panel screenshots saved to docs/');
+
+  // Custom OpenAI-compatible endpoints need a Base URL right next to the provider choice.
+  const urlLabel = 'label[data-url-for="normal.provider"]';
+  await panel.select('select[name="normal.provider"]', 'openai');
+  assert.equal(await panel.$eval(urlLabel, (l) => l.hidden), true, 'no Base URL for hosted providers');
+  await panel.select('select[name="normal.provider"]', 'custom');
+  assert.equal(await panel.$eval(urlLabel, (l) => l.hidden), false, 'Base URL shown for custom');
+  await panel.$eval(`${urlLabel} input`, (i) => { i.value = ''; });
+  await panel.type(`${urlLabel} input`, `${base}/v1/`);
+  for (let i = 0; i < 30; i++) {
+    const saved = await sw.evaluate(() => chrome.storage.local.get('settings').then((r) => r.settings.providers.custom.baseUrl));
+    if (saved === `${base}/v1`) break;
+    if (i === 29) throw new Error(`Base URL not saved: ${saved}`);
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  await panel.screenshot({ path: 'docs/settings.png' });
+  step('Custom (OpenAI-compatible) shows a Base URL field and saves it');
 
   // ---- Tasks mode: long-horizon run driven through the real side panel ----
   await panel.evaluate(() => document.querySelector('#close-settings').click());

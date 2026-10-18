@@ -95,6 +95,8 @@ Ask your agent things like *"Use hailbrowser to open my GitHub notifications and
 
 `tabs_context` · `tabs_create` · `tabs_select` · `tabs_close` · `navigate` · `read_page` · `find` · `get_page_text` · `screenshot` · `click` · `type` · `press_key` · `scroll` · `select_option` · `hover` · `handle_dialog` · `wait` · `javascript` · `run_task` and `stop_task` (MCP only: hand a whole goal to HailBrowser's own agent, or stop it)
 
+Every tab HailBrowser drives joins a purple **HailBrowser** tab group (⚡ while it's working), and the side panel's *Controlling* strip shows which tab, agent and window, with one-click Show and Release. Turn grouping off in Settings → Safety.
+
 Tool results stay honest: alerts are closed and reported, `confirm`/`prompt`/"leave site?" dialogs pause the page until `handle_dialog`, pop-up tabs are reported, `scroll` says which box moved (or that nothing could), and `type` reports when a page reformats or rejects the input. If a call times out or the agent cancels it, HailBrowser stops the action instead of finishing it later.
 
 `read_page` returns elements like `[ref_12] textbox "Search" value="cats"`; pass `ref_12` to `click`/`type`. Screenshot coordinates also work.
