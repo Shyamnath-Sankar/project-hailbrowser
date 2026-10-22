@@ -13,6 +13,7 @@ import { buildSchedule, describeWhen, nextRun, SCHEDULE_TOOL } from './agent/sch
 import { runResearch } from './agent/research.js';
 import { newReport, reportStore, RUNNING as RESEARCH_RUNNING } from './agent/reports.js';
 import { CHAT_HANDOFF_RULE, CHAT_MEMORY_RULE, CHAT_SCHEDULE_RULE, NORMAL_SYSTEM, TASK_UNATTENDED, UNATTENDED_RULES } from './agent/prompts.js';
+import * as cdp from './browser/cdp.js';
 import * as page from './browser/page.js';
 import * as groups from './browser/groups.js';
 
@@ -126,7 +127,7 @@ async function executeTask(id, { unattended = false } = {}) {
   const emit = (event) => broadcast({ type: 'event', source: 'task', taskId: id, event });
   try {
     driver = unattended ? 'Scheduled task' : 'Tasks';
-    const tab = await page.resolveTab();
+    const tab = (task.tabId != null && await chrome.tabs.get(task.tabId).catch(() => null)) || await page.resolveTab();
     pulseIndicator(tab.id, 'HailBrowser is working on your task', 0);
     const systemExtra = memorySection(settings, tab.url) + (unattended || task.scheduleId ? `\n${TASK_UNATTENDED}` : '');
     await runTask({ task, settings, signal: controller.signal, emit, save: saveTask, systemExtra });
@@ -150,6 +151,7 @@ async function executeTask(id, { unattended = false } = {}) {
     run = null;
     clearIndicator();
     broadcast(status());
+    releaseLater(driver, 1500);
     setTimeout(drainQueue, 0);
   }
 }
@@ -288,6 +290,7 @@ async function resolveProposal(pid, accept) {
 const bridge = new Bridge({
   onStatus(connected) {
     bridgeConnected = connected;
+    if (!connected) for (const who of [...releaseTimers.keys()]) releaseLater(who, 0); // agents are gone: stop showing control
     broadcast(status());
   },
   onCall: handleExternalCall,
@@ -296,6 +299,7 @@ const bridge = new Bridge({
 async function applySettings() {
   const s = await getSettings();
   bridge.configure(s.bridge);
+  cdp.setEffects(s.tools.showIndicator !== false);
   return s;
 }
 
@@ -327,9 +331,40 @@ async function claimTab(tabId, who = driver) {
   await groups.claim(tabId, who, { group: s.tools.groupTabs !== false });
 }
 
-const indicator = { tabId: null, timer: null };
+// ---------- control sessions ----------
+// A driver (an agent or a panel run) "controls" tabs from its first action until it stops: a run
+// ends, or an external agent makes no call for CONTROL_IDLE_MS (long enough to cover the model
+// thinking between steps). Then the glow, the tab group and the panel's Controlling strip all clear.
+const CONTROL_IDLE_MS = 12000;
+const releaseTimers = new Map(); // who -> timer
+
+function releaseLater(who, ms) {
+  if (!who) return;
+  clearTimeout(releaseTimers.get(who));
+  releaseTimers.set(who, setTimeout(async () => {
+    releaseTimers.delete(who);
+    if (run && driver === who) return releaseLater(who, ms || CONTROL_IDLE_MS); // still working
+    if (indicator.who === who) clearIndicator();
+    await groups.releaseWho(who);
+  }, ms));
+}
+
+// The Stop button on the page: stop whatever runs, let go of the tab, and hold off external agents briefly.
+let externalStopUntil = 0;
+chrome.runtime.onMessage.addListener((msg, sender) => {
+  if (msg?.type !== 'hail_stop' || sender.id !== chrome.runtime.id || !sender.tab) return;
+  externalStopUntil = Date.now() + 30000;
+  if (run) run.controller.abort(); // tasks pause (resumable); chats and research stop
+  page.setIndicator(sender.tab.id, false);
+  if (indicator.tabId === sender.tab.id) clearIndicator();
+  groups.release(sender.tab.id);
+  broadcast({ type: 'notice', text: 'Stopped from the page.' });
+});
+
+const indicator = { tabId: null, timer: null, who: null };
 async function pulseIndicator(tabId, label, holdMs = 2500) {
   if (tabId == null) return;
+  indicator.who = driver;
   claimTab(tabId);
   groups.setBusy(tabId);
   const s = await getSettings();
@@ -403,6 +438,8 @@ async function startRun({ goal, mode, url, tabId, source, values, signal, who })
     run = null;
     clearIndicator();
     broadcast(status());
+    // A run_task from an agent stays part of that agent's session; panel and scheduled runs end here.
+    releaseLater(driver, source === 'mcp' ? CONTROL_IDLE_MS : 1500);
     if (inChat) saveChatNow();
     if (handoff) {
       const { kind, args } = handoff;
@@ -485,6 +522,7 @@ async function startResearch({ question, depth, id, source = 'panel', scheduleId
   } finally {
     run = null;
     broadcast(status());
+    releaseLater('Research', 500);
     setTimeout(drainQueue, 0);
   }
   if (report.status === 'done' && report.chatId && !report.inChat) {
@@ -676,16 +714,22 @@ async function handleExternalCall(tool, args, client, signal) {
     const what = run.source === 'schedule' ? 'a scheduled HailBrowser job' : `${describeRun()} the user started in the side panel`;
     return { isError: true, content: [{ type: 'text', text: `The browser is busy with ${what}. Try again when it finishes.` }] };
   }
+  if (Date.now() < externalStopUntil && !READ_ONLY.has(tool) && tool !== 'stop_task') {
+    return { isError: true, content: [{ type: 'text', text: 'The user pressed Stop in the browser. Do not continue using the browser; ask the user how to proceed.' }] };
+  }
+  const who = groups.agentName(client);
+  releaseLater(who, CONTROL_IDLE_MS);
   const entry = { tool, args: summarizeArgs(args), client: client || 'mcp', at: Date.now() };
   activity.push(entry);
   if (activity.length > 50) activity.shift();
   broadcast({ type: 'external', entry });
 
-  if (!run) driver = groups.agentName(client);
+  if (!run) driver = who;
   // Tab management acts on another tab than the current one; those tabs are claimed when selected.
-  if (!READ_ONLY.has(tool) && !['run_task', 'stop_task', 'tabs_create', 'tabs_select', 'tabs_close'].includes(tool)) {
+  // The glow stays on between calls while the agent thinks, and goes with the rest of the session.
+  if (!['tabs_context', 'wait', 'run_task', 'stop_task', 'tabs_create', 'tabs_select', 'tabs_close'].includes(tool)) {
     const tab = await page.resolveTab(args.tabId).catch(() => null);
-    if (tab && !page.isRestricted(tab.url)) pulseIndicator(tab.id, `${groups.agentName(client)} is using this tab`);
+    if (tab && !page.isRestricted(tab.url)) pulseIndicator(tab.id, `${who} is using this tab`, CONTROL_IDLE_MS);
   }
   const started = Date.now();
   const result = await executeTool(tool, args, {
@@ -706,6 +750,7 @@ async function handleExternalCall(tool, args, client, signal) {
     },
   });
   broadcast({ type: 'external_result', entry, isError: !!result.isError, ms: Date.now() - started });
+  releaseLater(who, CONTROL_IDLE_MS); // idle time counts from the end of the call
   return result;
 }
 
@@ -821,6 +866,7 @@ chrome.runtime.onConnect.addListener((port) => {
 globalThis.hail = {
   runSchedule: (id) => enqueue(id, true),
   saveSchedule: (draft) => saveScheduleDraft(draft),
+  clearStop: () => { externalStopUntil = 0; },
   stores: { chatStore, taskStore, reportStore },
   state: () => ({ run: run && { mode: run.mode, source: run.source, id: run.id }, queue, tasks: [...tasks.keys()], schedules: [...schedules.keys()] }),
 };

@@ -102,6 +102,14 @@ export async function release(tabId) {
   save();
 }
 
+/** Stop showing control for every tab a driver ("Claude Code", "Chat", …) holds. */
+export async function releaseWho(who) {
+  await ready;
+  const ids = [...controlled].filter(([, v]) => v.who === who).map(([id]) => id);
+  for (const id of ids) await release(id);
+  return ids.length;
+}
+
 /** Controlled tabs for the side panel, with window labels. */
 export async function list() {
   await ready;

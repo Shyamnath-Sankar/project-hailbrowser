@@ -291,6 +291,7 @@ details > summary { cursor: pointer; color: var(--accent-2); font-size: 12px; ma
 .toast {
   position: absolute !important; left: 14px; right: 14px; bottom: 92px; z-index: 20 !important; padding: 10px 12px; border-radius: 12px;
   background: var(--card-3); border: 1px solid var(--line-hi); font-size: 12.5px; box-shadow: 0 10px 30px rgba(0, 0, 0, .4); animation: rise .18s ease-out;
+  pointer-events: none; /* never covers a button */
 }
 .toast.error { border-color: rgba(255, 122, 138, .55); color: #ffd2d8; }
 @keyframes rise { from { transform: translateY(6px); opacity: 0; } }

@@ -154,15 +154,40 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const report = {};
 let client;
 
-async function worker() {
-  const target = await browser.waitForTarget((t) => t.type() === 'service_worker' && t.url().endsWith('src/background.js'), { timeout: 20000 });
-  const w = await target.worker();
-  for (let i = 0; i < 50 && !(await w.evaluate(() => !!globalThis.hail).catch(() => false)); i++) await sleep(100);
-  return w;
+// Calls into a worker that died never settle, so every one gets a deadline.
+const deadline = (p, ms, what) => Promise.race([p, new Promise((_, reject) => setTimeout(() => reject(new Error(`${what} timed out`)), ms))]);
+
+/**
+ * Evaluate in the extension's service worker over our own CDP session. After the worker is killed,
+ * Chrome restarts it under the same target and holds it paused for the debugger, and puppeteer's
+ * worker handle stays bound to the dead one; a fresh session (resumed) reaches the new worker.
+ */
+const swTarget = await browser.waitForTarget((t) => t.type() === 'service_worker' && t.url().endsWith('src/background.js'), { timeout: 20000 });
+let swSession = null;
+async function attachWorker() {
+  swSession?.detach().catch(() => {});
+  swSession = await deadline(swTarget.createCDPSession(), 10000, 'attaching to the worker');
+  await swSession.send('Runtime.runIfWaitingForDebugger').catch(() => {});
+  for (let i = 0; i < 100; i++) {
+    const r = await deadline(swSession.send('Runtime.evaluate', { expression: 'typeof globalThis.hail' }), 3000, 'worker ping').catch(() => null);
+    if (r?.result?.value === 'object') return;
+    await sleep(100);
+  }
+  throw new Error('The service worker did not start');
 }
-let sw = await worker();
+const sw = {
+  url: () => swTarget.url(),
+  async evaluate(fn, ...args) {
+    const r = await deadline(swSession.send('Runtime.evaluate', {
+      expression: `(${fn.toString()})(...${JSON.stringify(args)})`, awaitPromise: true, returnByValue: true,
+    }), 30000, 'worker evaluate');
+    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
+    return r.result.value;
+  },
+};
+await attachWorker();
 const extId = new URL(sw.url()).host;
-const store = (key) => sw.evaluate((k) => chrome.storage.local.get(k).then((r) => r[k]), key);
+const store = (key) => deadline(sw.evaluate((k) => chrome.storage.local.get(k).then((r) => r[k]), key), 5000, 'storage read');
 const waitFor = async (fn, label, ms = 60000) => {
   const end = Date.now() + ms;
   for (;;) {
@@ -202,11 +227,13 @@ try {
   await panel.goto(`chrome-extension://${extId}/sidepanel/index.html`);
   await panel.waitForSelector('#input');
   // Event-loop lag in the panel: the worst delay of a 50 ms timer while everything runs.
-  await panel.evaluate(() => {
+  let lagBefore = 0;
+  const watchLag = () => panel.evaluate(() => {
     window.__lag = 0;
     let last = performance.now();
     setInterval(() => { const now = performance.now(); window.__lag = Math.max(window.__lag, now - last - 50); last = now; }, 50);
   });
+  await watchLag();
 
   // ---- 1. Long-horizon task under chaos ----
   const taskStart = Date.now();
@@ -221,7 +248,7 @@ try {
   await cdp.send('ServiceWorker.enable');
   await cdp.send('ServiceWorker.stopAllWorkers');
   await sleep(1500);
-  sw = await worker(); // the panel reconnects, which starts a fresh worker
+  await attachWorker(); // the panel reconnects, which starts a fresh worker
   const paused = await waitFor(async () => { const t = await latestTask(); return t?.status === 'paused' && t; }, 'task paused after the worker restart', 20000);
   assert.match(paused.log.at(-1).text, /Chrome restarted the extension/);
   const doneAtKill = paused.subtasks.filter((s) => s.status === 'done').length;
@@ -267,8 +294,10 @@ try {
   await panel.type('#input', 'Tell me everything about beta');
   await panel.keyboard.press('Enter');
   await waitFor(async () => (await store('reports:index'))?.[0]?.status === 'reading', 'research reading');
+  lagBefore = await panel.evaluate(() => window.__lag);
   await panel.reload();
   await panel.waitForSelector('#feed .report-slot .phases', { timeout: 15000 });
+  await watchLag();
   step('panel reloaded during research: the live report card is back');
   const rIdx = await waitFor(async () => { const i = (await store('reports:index'))?.[0]; return ['done', 'failed'].includes(i?.status) && i; }, 'research to finish', 240000);
   const rep = await store(`reports:${rIdx.id}`);
@@ -276,7 +305,11 @@ try {
   report.research = { status: rep.status, seconds: ((Date.now() - rStart) / 1000).toFixed(0), rounds: rep.round, queries: rep.queries.length, ok: by('ok'), failed: by('failed'), skipped: by('skipped'), errors: rep.sources.filter((s) => s.error).map((s) => `${new URL(s.url).pathname}: ${s.error}`) };
   assert.equal(rep.status, 'done', rep.error);
   assert.ok(by('ok') >= 5, `only ${by('ok')} sources were usable`);
-  assert.equal(rep.sources.find((s) => s.url.endsWith('/rs/8'))?.status, 'failed', 'the 404 page is not used');
+  // Whichever bad pages were picked (404, never-finishing, alert on load) must not end up as cited sources.
+  for (const bad of ['/rs/8', '/rs/9', '/rs/10']) {
+    const src = rep.sources.find((x) => x.url.endsWith(bad));
+    if (src) assert.ok(!src.n, `${bad} was cited (${src.status})`);
+  }
   await panel.waitForFunction(() => document.querySelectorAll('#feed .answer .cite').length >= 5);
   const leftover = await sw.evaluate(() => chrome.tabs.query({}).then((t) => t.filter((x) => /\/rs\/|\/search\?/.test(x.url)).length));
   assert.equal(leftover, 0, 'research closed every tab it opened (including the hanging and alert pages)');
@@ -312,12 +345,11 @@ try {
     });
     return Math.round(performance.now() - t);
   });
-  report.panel = { openBigChatMs: drawMs, maxEventLoopLagMs: Math.round(await panel.evaluate(() => window.__lag)) };
+  report.panel = { openBigChatMs: drawMs, maxEventLoopLagMs: Math.round(Math.max(lagBefore, await panel.evaluate(() => window.__lag))) };
   assert.ok(drawMs < 3000, `opening a 400-event chat took ${drawMs} ms`);
   step(`panel: a 400-event chat opens in ${drawMs} ms; worst event-loop stall during the whole run ${report.panel.maxEventLoopLagMs} ms`);
 
-  const heap = await (await (await browser.waitForTarget((t) => t.type() === 'service_worker' && t.url().endsWith('src/background.js'))).createCDPSession())
-    .send('Runtime.getHeapUsage').catch(() => null);
+  const heap = await swSession.send('Runtime.getHeapUsage').catch(() => null);
   if (heap) report.worker = { heapMB: (heap.usedSize / 1e6).toFixed(1) };
 
   report.model = { calls: stats.calls, injected500: stats.err500, injected429: stats.err429, brokenToolArgs: stats.broken, byKind: stats.byKind };

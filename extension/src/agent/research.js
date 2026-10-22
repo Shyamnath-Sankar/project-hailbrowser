@@ -12,6 +12,7 @@ import { RESEARCH_EXTRACT, RESEARCH_GAPS, RESEARCH_PICK, RESEARCH_PLANNER, RESEA
 
 const READERS = 3;
 const MAX_PAGE_CHARS = 15000;
+const READ_TIMEOUT_MS = 4000;
 
 function cleanQueries(list, max, used = []) {
   const seen = new Set(used.map((q) => q.toLowerCase()));
@@ -102,9 +103,14 @@ export async function runResearch({ report, settings, signal, save, onTab = () =
     let id = null;
     try {
       id = await openTab(s.url);
-      await page.waitForLoad(id, 15000);
-      await page.sleep(500);
-      const got = await page.run(id, inj.pageText, MAX_PAGE_CHARS);
+      // Text is usually there long before "load" (ads, trackers); a page that hangs or blocks on an
+      // alert() is given up on after ~10 s instead of holding a reader slot.
+      await page.waitForLoad(id, 8000);
+      await page.sleep(400);
+      const got = await Promise.race([
+        page.run(id, inj.pageText, MAX_PAGE_CHARS),
+        page.sleep(READ_TIMEOUT_MS).then(() => { throw new Error('The page did not respond (still loading, or blocked by a pop-up dialog).'); }),
+      ]);
       const tab = await chrome.tabs.get(id).catch(() => null);
       await closeTab(id);
       id = null;

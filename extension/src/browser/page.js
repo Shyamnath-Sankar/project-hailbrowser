@@ -6,8 +6,14 @@ let currentTabId = null;
 let currentTabListener = null;
 const shotScale = new Map(); // tabId -> CSS px per screenshot px
 
+// The agent's tab survives service-worker restarts (session storage lasts until Chrome closes).
+const restored = globalThis.chrome?.storage?.session
+  ? chrome.storage.session.get('hailCurrentTab').then(({ hailCurrentTab }) => { if (currentTabId == null && hailCurrentTab != null) currentTabId = hailCurrentTab; }).catch(() => {})
+  : Promise.resolve();
+
 export function setCurrentTab(tabId, { quiet = false } = {}) {
   currentTabId = tabId;
+  chrome.storage?.session?.set({ hailCurrentTab: tabId }).catch(() => {});
   if (!quiet) currentTabListener?.(tabId);
 }
 
@@ -26,8 +32,11 @@ export function isRestricted(url) {
   return !url || BLOCKED.test(url);
 }
 
-/** The tab to act on: explicit id, then the agent's current tab, then the active tab. */
+const ownPage = (t) => (t?.url || t?.pendingUrl || '').startsWith(`chrome-extension://${globalThis.chrome?.runtime?.id}/`);
+
+/** The tab to act on: explicit id, then the agent's current tab, then the active tab (never HailBrowser's own pages). */
 export async function resolveTab(tabId) {
+  await restored;
   if (tabId != null) {
     const tab = await chrome.tabs.get(Number(tabId)).catch(() => null);
     if (!tab) throw new Error(`No tab with id ${tabId}. Call tabs_context to list tabs.`);
@@ -35,11 +44,12 @@ export async function resolveTab(tabId) {
   }
   if (currentTabId != null) {
     const tab = await chrome.tabs.get(currentTabId).catch(() => null);
-    if (tab) return tab;
+    if (tab && !ownPage(tab)) return tab;
   }
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true, windowType: 'normal' });
-  if (tab) return tab;
-  const [any] = await chrome.tabs.query({ active: true, windowType: 'normal' });
+  if (tab && !ownPage(tab)) return tab;
+  const any = (await chrome.tabs.query({ active: true, windowType: 'normal' })).find((t) => !ownPage(t))
+    || (await chrome.tabs.query({ windowType: 'normal' })).find((t) => !ownPage(t));
   if (!any) throw new Error('No browser tab available. Call tabs_create first.');
   return any;
 }
@@ -104,6 +114,16 @@ export async function navigate(tabId, url) {
 }
 
 export async function screenshot(tabId, maxWidth = 1280) {
+  // The model should see the page itself, not HailBrowser's glow and status pill.
+  const hid = await run(tabId, inj.overlayVisible, false).catch(() => false);
+  try {
+    return await capturePage(tabId, maxWidth);
+  } finally {
+    if (hid) run(tabId, inj.overlayVisible, true).catch(() => {});
+  }
+}
+
+async function capturePage(tabId, maxWidth) {
   const metrics = await cdp.send(tabId, 'Page.getLayoutMetrics');
   const cssW = metrics.cssVisualViewport.clientWidth;
   const capture = (extra, ms) => withTimeout(cdp.send(tabId, 'Page.captureScreenshot', { format: 'jpeg', quality: 80, optimizeForSpeed: true, ...extra }), ms,
@@ -146,7 +166,9 @@ export async function pointFor(tabId, nodeId) {
 }
 
 export async function setIndicator(tabId, on, label) {
-  await run(tabId, inj.setIndicator, on, label).catch(() => {});
+  // executeScript rejects `undefined` arguments, so always pass a string (an undefined label used to
+  // make every "turn the glow off" call fail silently).
+  await run(tabId, inj.setIndicator, !!on, label || '').catch(() => {});
 }
 
 /**

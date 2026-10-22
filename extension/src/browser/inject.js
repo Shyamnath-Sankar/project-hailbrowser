@@ -139,11 +139,20 @@ export function resolveNode(id) {
   const inset = Math.min(r.width, r.height) / 4;
   const points = [[r.left + r.width / 2, r.top + r.height / 2], [r.left + inset, r.top + r.height / 2],
     [r.right - inset, r.top + r.height / 2], [r.left + r.width / 2, r.top + inset], [r.left + r.width / 2, r.bottom - inset]];
+  // HailBrowser's own overlay never counts as covering the target; its pill steps aside if the click lands on it.
+  const overlay = document.getElementById('__hailbrowser_indicator');
+  const stepAside = (x, y) => {
+    const b = overlay?.__pill?.getBoundingClientRect();
+    if (!b || x < b.left - 6 || x > b.right + 6 || y < b.top - 6 || y > b.bottom + 6) return;
+    overlay.style.visibility = 'hidden';
+    clearTimeout(overlay.__aside);
+    overlay.__aside = setTimeout(() => { overlay.style.visibility = ''; }, 1500);
+  };
   let blocker = null;
   for (const [px, py] of points) {
     const x = Math.min(Math.max(px, 1), innerWidth - 2), y = Math.min(Math.max(py, 1), innerHeight - 2);
-    const hit = document.elementFromPoint(x, y);
-    if (owns(hit) || (hit && hit.contains(e))) return { x, y, tag: e.tagName };
+    const hit = document.elementsFromPoint(x, y).find((h) => h !== overlay);
+    if (owns(hit) || (hit && hit.contains(e))) { stepAside(x, y); return { x, y, tag: e.tagName }; }
     blocker ||= hit;
   }
   const label = blocker ? (blocker.getAttribute('aria-label') || blocker.innerText || blocker.tagName).trim().replace(/\s+/g, ' ').slice(0, 80) : 'unknown';
@@ -341,25 +350,115 @@ export function pageText(maxChars) {
   return { url: location.href, title: document.title, text: text.slice(0, maxChars), truncated: text.length > maxChars, total: text.length };
 }
 
-/** A soft glow + pill showing the tab is being driven by an agent. Lives in a closed shadow root. */
+/**
+ * The "this tab is being driven" overlay: a flowing gradient border, a breathing glow, an agent
+ * cursor, and a status pill with a Stop button. Lives in a closed shadow root, ignores the mouse
+ * (except the pill), fades in and out, and respects prefers-reduced-motion.
+ */
 export function setIndicator(on, label) {
   const ID = '__hailbrowser_indicator';
   let host = document.getElementById(ID);
-  if (!on) { host?.remove(); return true; }
+  if (!on) {
+    if (host && !host.__leaving) {
+      host.__leaving = true;
+      host.__root?.querySelector('.wrap')?.classList.add('out');
+      setTimeout(() => { if (host.__leaving) host.remove(); }, 280);
+    }
+    return true;
+  }
+  if (host?.__leaving) {
+    host.__leaving = false;
+    host.__root.querySelector('.wrap').classList.remove('out');
+  }
   if (!host) {
     host = document.createElement('div');
     host.id = ID;
-    host.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483647;';
+    host.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483647;display:block;margin:0;padding:0;border:0;';
     const root = host.attachShadow({ mode: 'closed' });
     root.innerHTML = `<style>
-      .glow{position:fixed;inset:0;box-shadow:inset 0 0 0 2px rgba(91,141,255,.9),inset 0 0 28px rgba(91,141,255,.45);animation:p 1.6s ease-in-out infinite;border-radius:2px}
-      .pill{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);font:600 12px/1 system-ui,sans-serif;color:#fff;
-        background:linear-gradient(90deg,#3b6cff,#8b5cf6);padding:8px 12px;border-radius:999px;box-shadow:0 4px 16px rgba(0,0,0,.25)}
-      @keyframes p{50%{opacity:.55}}</style><div class="glow"></div><div class="pill"></div>`;
+      :host{all:initial}
+      .wrap{position:fixed;inset:0;animation:fade-in .35s ease-out both}
+      .wrap.out{animation:fade-out .26s ease-in both}
+      .ring{position:fixed;inset:0;padding:3px;background:linear-gradient(100deg,#8b5cf6,#38bdf8,#f0abfc,#8b5cf6);background-size:300% 100%;
+        animation:flow 5s linear infinite;-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude}
+      .glow{position:fixed;inset:0;box-shadow:inset 0 0 44px 4px rgba(139,92,246,.30),inset 0 0 120px 10px rgba(56,189,248,.10);animation:breathe 2.6s ease-in-out infinite}
+      .pill{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);display:flex;align-items:center;gap:9px;padding:5px 5px 5px 7px;
+        border-radius:999px;font:600 12.5px/1.2 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#f5f3ff;white-space:nowrap;max-width:min(560px,92vw);
+        background:rgba(20,16,40,.94);border:1px solid rgba(167,139,250,.5);
+        box-shadow:0 10px 32px rgba(10,6,30,.45),0 0 0 4px rgba(139,92,246,.14);pointer-events:auto;animation:rise .45s cubic-bezier(.2,.9,.25,1.2) both}
+      .bolt{position:relative;flex:none;display:grid;place-items:center;width:22px;height:22px;border-radius:50%;background:linear-gradient(135deg,#8b5cf6,#38bdf8)}
+      .bolt svg{width:12px;height:12px;fill:#fff}
+      .bolt::after{content:"";position:absolute;inset:-3px;border-radius:50%;border:2px solid rgba(167,139,250,.7);animation:ping 1.6s cubic-bezier(0,0,.2,1) infinite}
+      .label{overflow:hidden;text-overflow:ellipsis;min-width:0}
+      .dots{display:inline-flex;gap:3px;margin-right:2px}
+      .dots i{width:4px;height:4px;border-radius:50%;background:#c4b5fd;animation:blink 1.2s infinite}
+      .dots i:nth-child(2){animation-delay:.2s}.dots i:nth-child(3){animation-delay:.4s}
+      .stop{all:unset;cursor:pointer;flex:none;padding:6px 11px;border-radius:999px;background:rgba(255,255,255,.1);color:#fff;font:600 11.5px/1 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;transition:background .15s}
+      .stop:hover{background:#ef4444}.stop:focus-visible{outline:2px solid #c4b5fd;outline-offset:2px}
+      .pill.stopping .stop{display:none}.pill.stopping .dots{display:none}
+      .cursor{position:fixed;left:0;top:0;width:22px;height:22px;opacity:0;transform:translate(50vw,60vh);
+        transition:transform .32s cubic-bezier(.2,.8,.2,1),opacity .25s}
+      .ripple{position:fixed;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;border:2px solid #a78bfa;background:rgba(167,139,250,.28);animation:ripple .65s ease-out forwards}
+      @keyframes flow{to{background-position:300% 0}}
+      @keyframes breathe{50%{opacity:.5}}
+      @keyframes blink{50%{opacity:.25}}
+      @keyframes ping{75%,100%{transform:scale(1.7);opacity:0}}
+      @keyframes ripple{to{transform:scale(4);opacity:0}}
+      @keyframes rise{from{opacity:0;transform:translate(-50%,14px) scale(.96)}}
+      @keyframes fade-in{from{opacity:0}}
+      @keyframes fade-out{to{opacity:0}}
+      @media (prefers-reduced-motion:reduce){*,*::after{animation:none!important;transition:none!important}}
+    </style><div class="wrap"><div class="ring"></div><div class="glow"></div>
+      <svg class="cursor" viewBox="0 0 24 24"><path d="M4 3l6.5 17.5 2.6-7.4L20.5 10.5z" fill="#8b5cf6" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>
+      <div class="pill" role="status"><span class="bolt"><svg viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg></span>
+        <span class="label"></span><span class="dots"><i></i><i></i><i></i></span><button class="stop" title="Stop HailBrowser on this tab">Stop</button></div></div>`;
+    host.__root = root;
     host.__pill = root.querySelector('.pill');
-    (document.body || document.documentElement).appendChild(host);
+    root.querySelector('.stop').addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      host.__pill.classList.add('stopping');
+      root.querySelector('.label').textContent = 'Stopping…';
+      try { chrome.runtime.sendMessage({ type: 'hail_stop' }); } catch {}
+    });
+    document.documentElement.appendChild(host);
   }
-  if (host.__pill) host.__pill.textContent = `⚡ ${label || 'HailBrowser is working'}`;
+  if (!host.__pill.classList.contains('stopping')) host.__root.querySelector('.label').textContent = label || 'HailBrowser is working';
+  return true;
+}
+
+/** Glide the agent cursor to a click point and ripple there (only while the overlay is shown). */
+export function showClick(x, y) {
+  const host = document.getElementById('__hailbrowser_indicator');
+  const root = host?.__root;
+  if (!root || host.__leaving) return false;
+  const cursor = root.querySelector('.cursor');
+  cursor.style.opacity = '1';
+  cursor.style.transform = `translate(${x - 4}px, ${y - 3}px)`;
+  const ripple = document.createElement('div');
+  ripple.className = 'ripple';
+  ripple.style.left = `${x}px`;
+  ripple.style.top = `${y}px`;
+  root.querySelector('.wrap').appendChild(ripple);
+  setTimeout(() => ripple.remove(), 700);
+  return true;
+}
+
+/** Hide or show the overlay without removing it, e.g. so screenshots show the page as it is. */
+export function overlayVisible(on) {
+  const host = document.getElementById('__hailbrowser_indicator');
+  if (host) host.style.visibility = on ? '' : 'hidden';
+  return !!host;
+}
+
+/** Hide the overlay briefly if a click at x,y (from a screenshot) would land on its pill. */
+export function yieldIndicator(x, y) {
+  const host = document.getElementById('__hailbrowser_indicator');
+  const b = host?.__pill?.getBoundingClientRect();
+  if (!b || x < b.left - 6 || x > b.right + 6 || y < b.top - 6 || y > b.bottom + 6) return false;
+  host.style.visibility = 'hidden';
+  clearTimeout(host.__aside);
+  host.__aside = setTimeout(() => { host.style.visibility = ''; }, 1500);
   return true;
 }
 

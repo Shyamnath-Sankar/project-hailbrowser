@@ -1,5 +1,6 @@
 // chrome.debugger wrapper: trusted input events and screenshots that work in
 // background tabs, without Chrome's --remote-debugging-port.
+import { showClick } from './inject.js';
 
 const attached = new Map(); // tabId -> Promise<void>
 const dialogs = new Map(); // tabId -> open dialog {type, message, defaultPrompt, url}
@@ -204,7 +205,14 @@ export async function pressChord(tabId, chord) {
   await send(tabId, 'Input.dispatchKeyEvent', { ...base, type: 'keyUp' });
 }
 
+let effects = true;
+/** Show the agent cursor and click ripple in pages (follows the "glow on controlled tabs" setting). */
+export function setEffects(on) {
+  effects = !!on;
+}
+
 export async function mouseClick(tabId, x, y, { button = 'left', clickCount = 1, modifiers = 0 } = {}) {
+  if (effects) chrome.scripting.executeScript({ target: { tabId }, func: showClick, args: [x, y] }).catch(() => {});
   await send(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, modifiers });
   for (let i = 1; i <= clickCount; i++) {
     await send(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, clickCount: i, modifiers });

@@ -347,6 +347,43 @@ try {
   await panel.waitForSelector('#control[hidden]');
   step(`controlled tabs grouped as "${grouped.title}" (${grouped.color}), listed in the panel, released on demand`);
 
+  // While an agent works, the page shows the animated overlay; once it goes quiet, control ends by itself.
+  const overlay = () => sw.evaluate((id) => chrome.scripting.executeScript({ target: { tabId: id }, func: () => {
+    const h = document.getElementById('__hailbrowser_indicator');
+    return h && !h.__leaving ? { label: h.__root.querySelector('.label').textContent, pill: h.__pill.getBoundingClientRect().toJSON() } : null;
+  } }).then((r) => r[0].result), agentTab);
+  const until = async (fn, label, ms = 20000) => {
+    const end = Date.now() + ms;
+    for (;;) {
+      const v = await fn();
+      if (v) return v;
+      if (Date.now() > end) throw new Error(`Timed out waiting for ${label}`);
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  };
+  await call('navigate', { url: base });
+  const fresh = await call('read_page');
+  await call('click', { ref: /\[(ref_\d+)\] checkbox "Nonstop/.exec(fresh.text)[1] });
+  const shown = await until(overlay, 'the page overlay');
+  assert.match(shown.label, /is using this tab/);
+  assert.ok(await groupOf(), 'the tab is in the HailBrowser group while the agent works');
+  const quietFrom = Date.now();
+  await until(async () => !(await overlay()) && !(await groupOf()) && await panel.$eval('#control', (e) => e.hidden), 'control to end after the agent went quiet');
+  step(`animated overlay while the agent worked; overlay, tab group and panel strip cleared ${((Date.now() - quietFrom) / 1000).toFixed(0)}s after its last call`);
+
+  // The Stop button in the page stops the agent.
+  await call('click', { ref: /\[(ref_\d+)\] checkbox "Nonstop/.exec(fresh.text)[1] });
+  // Attaching puppeteer to the tab resizes its viewport, so measure the pill after that.
+  const agentPage = (await browser.pages()).find((p) => p.url() === `${base}/`);
+  await new Promise((r) => setTimeout(r, 600));
+  const { pill } = await until(overlay, 'the overlay again');
+  await agentPage.mouse.click(pill.right - 24, pill.top + pill.height / 2);
+  await until(async () => !(await overlay()), 'the overlay to go after Stop');
+  const refused = await client.callTool({ name: 'click', arguments: { ref: 'ref_1' } });
+  assert.ok(refused.isError && /pressed Stop/.test(refused.content[0].text), refused.content[0].text);
+  await sw.evaluate(() => hail.clearStop());
+  step('Stop button in the page: overlay removed, the agent is told the user stopped it');
+
   await call('navigate', { url: base });
   const fast =await call('run_task', { goal: 'Search for London', mode: 'ultrafast' });
   assert.match(fast.text, /Done/);

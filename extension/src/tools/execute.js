@@ -48,6 +48,7 @@ async function pointArg(tab, { ref, x, y }, tool) {
   if (ref != null) return page.pointFor(tab.id, parseRef(ref));
   if (isNum(x) && isNum(y)) {
     const [px, py] = page.toCss(tab.id, x, y);
+    await page.run(tab.id, inj.yieldIndicator, px, py).catch(() => {});
     return { x: px, y: py };
   }
   throw new Error(`${tool} needs a ref (from read_page/find) or numeric x and y (from a screenshot).`);

@@ -602,6 +602,7 @@ function onMessage(msg) {
     case 'external': return renderExternal(msg.entry);
     case 'external_result': return finishExternal(msg);
     case 'error': return toast(msg.text, 'error');
+    case 'notice': return toast(msg.text);
   }
 }
 

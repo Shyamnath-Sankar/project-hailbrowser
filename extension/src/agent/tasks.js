@@ -90,8 +90,11 @@ export async function runTask({ task, settings, signal, emit, save, systemExtra 
   const update = (patch) => { Object.assign(task, patch, { updatedAt: Date.now() }); return save(task); };
   const cap = settings.tasks?.maxTotalSteps || 400;
 
-  const tab = await page.resolveTab();
+  // A task keeps working in its own tab, even after a restart or when the user switched tabs.
+  const own = task.tabId != null ? await chrome.tabs.get(task.tabId).catch(() => null) : null;
+  const tab = own || await page.resolveTab();
   page.setCurrentTab(tab.id);
+  task.tabId = tab.id;
 
   if (!task.subtasks.length) {
     await update({ status: 'planning' });
@@ -139,6 +142,7 @@ export async function runTask({ task, settings, signal, emit, save, systemExtra 
     }
 
     current.status = 'active';
+    if (page.currentTab() != null) task.tabId = page.currentTab(); // follows tabs the agent opened
     current.attempts++;
     log(`Started: ${current.title}`);
     await update({});

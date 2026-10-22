@@ -4,6 +4,8 @@
 
 **An open-source browser agent that lives in your Chrome.** Chat with it in the side panel using any model you like, switch to **Ultrafast** mode for snappy form and search flows, or plug it into **Claude Code, OpenCode, Cursor, Codex** and any other MCP client so your coding agent can use your real, logged-in browser.
 
+<p align="center"><img src="docs/overlay.png" width="520" alt="A tab being driven: animated border, agent cursor and a status pill with a Stop button" /></p>
+
 <p align="center"><img src="docs/research.png" width="260" alt="Research mode: a cited report written from sources read in the browser" /> <img src="docs/tasks-ask.png" width="260" alt="Tasks mode: a long job split into subtasks, paused to ask the user a question" /> <img src="docs/chat.png" width="260" alt="Chat that remembers a preference and proposes a scheduled job" /></p>
 
 ## What you get
@@ -11,17 +13,17 @@
 | | |
 |---|---|
 | **Side panel agent** | Chat with the current tab. Bring your own key: Anthropic, OpenAI, OpenRouter, Gemini, Together AI, Groq, DeepSeek, Ollama, LM Studio, or any OpenAI-compatible endpoint. |
-| **Four modes** | **Chat**: a full tool-calling agent (read page, click, type, screenshots, JS). **⚡ Fast**: one decision request per step, no screenshots — inspired by [jev-ultrafast](https://github.com/browser-use/jev-ultrafast). **Tasks**: long jobs (finish a course, work through a list) split into subtasks with saved progress. **Research**: searches the web, reads the best sources in background tabs and writes a report that cites every claim. |
+| **One chat that does it all** | **Chat** is a full tool-calling agent (read page, click, type, screenshots, JS). It hands a question to **🔍 Research** (searches the web, reads the best sources in background tabs, writes a report citing every claim) or a big job to **📋 Long task** (planned subtasks, saved progress) when it needs to, or you turn those on in the composer. Results show up inline, and follow-up questions can use them. **⚡ Fast** mode runs one decision request per step, inspired by [jev-ultrafast](https://github.com/browser-use/jev-ultrafast). |
 | **Remembers you** | Say "remember…" in chat and it keeps the fact (your city, units, which account to use on a site) for later chats, tasks and scheduled jobs. Edit or delete memories in Settings. |
 | **Works while you're away** | Schedule any goal — once, daily, weekdays, or every few hours — or just say "every morning at 9, …" in chat. Jobs run in a background tab and send a notification with the result. |
 | **Nothing gets lost** | Chats, tasks and research reports are saved. Paused or waiting tasks show a **Resume** banner; History lists everything; chats and reports export as Markdown. |
 | **MCP bridge** | `hailbrowser-mcp` exposes 18 browser tools to any MCP client. Several agents can share one browser at once. |
 | **Real browser, real input** | Uses `chrome.debugger` for trusted mouse/keyboard events and screenshots in background tabs. No `--remote-debugging-port`, no separate Chrome profile. |
-| **Visible & stoppable** | A glow shows which tab is being driven; every step appears in the side panel; one click stops a run. |
+| **Visible & stoppable** | A driven tab gets an animated border, an agent cursor that ripples where it clicks, and a status pill with a **Stop** button. Every step appears in the side panel. Everything clears by itself when the agent is done. |
 
-## How Tasks mode works
+## How long tasks work
 
-For jobs too long for one chat — completing a course, processing a list of pages — pick **Tasks**:
+For jobs too long for one chat — completing a course, processing a list of pages — turn on **📋 Long task** in the composer, or just ask: Chat starts one by itself when the job needs many steps.
 
 1. **Plan**: your model splits the goal into 3–15 concrete subtasks (and can add more as it discovers them, e.g. extra lessons).
 2. **Work**: each subtask runs with a fresh, focused context: the overall goal, the plan with ✓ marks, and saved notes. Context never balloons, so it can keep going for hundreds of steps.
@@ -32,6 +34,8 @@ For jobs too long for one chat — completing a course, processing a list of pag
 Budgets (steps per subtask, total steps before checking in) are in Settings → Tasks. Every task is kept in a list: start a new one while another is paused, and come back to any of them.
 
 ## How Research works
+
+Ask a question that needs the web and Chat hands it to Research, or turn on **🔍 Research** in the composer (pick Quick, Std or Deep). The report appears in the chat.
 
 1. **Plan**: your model writes 2–4 search queries that cover the question from different angles.
 2. **Search**: each query runs in a background tab on DuckDuckGo (or Bing, Google, or any search URL). If an engine shows a CAPTCHA or nothing useful, it falls back to another one.
@@ -114,7 +118,9 @@ Ask your agent things like *"Use hailbrowser to open my GitHub notifications and
 
 `tabs_context` · `tabs_create` · `tabs_select` · `tabs_close` · `navigate` · `read_page` · `find` · `get_page_text` · `screenshot` · `click` · `type` · `press_key` · `scroll` · `select_option` · `hover` · `handle_dialog` · `wait` · `javascript` · `run_task` and `stop_task` (MCP only: hand a whole goal to HailBrowser's own agent, or stop it)
 
-Every tab HailBrowser drives joins a purple **HailBrowser** tab group (⚡ while it's working), and the side panel's *Controlling* strip shows which tab, agent and window, with one-click Show and Release. Turn grouping off in Settings → Safety.
+Every tab HailBrowser drives joins a purple **HailBrowser** tab group (⚡ while it's working), and the side panel's *Controlling* strip shows which tab, agent and window, with one-click Show and Release. In the page itself, an animated border, an agent cursor and a status pill show that it's being driven. Pressing the pill's **Stop** button halts the run, and coding agents are told the user stopped them.
+
+Control ends by itself: when a side-panel run finishes, or when a coding agent makes no call for 12 seconds, the border, the tab group and the strip all clear. Screenshots taken for the model hide the overlay, so the model sees the page exactly as it is. Turn the glow and the grouping off in Settings → Safety.
 
 Tool results stay honest: alerts are closed and reported, `confirm`/`prompt`/"leave site?" dialogs pause the page until `handle_dialog`, pop-up tabs are reported, `scroll` says which box moved (or that nothing could), and `type` reports when a page reformats or rejects the input. If a call times out or the agent cancels it, HailBrowser stops the action instead of finishing it later.
 
@@ -149,6 +155,8 @@ More in [docs/architecture.md](docs/architecture.md).
 npm test                                  # syntax check + unit/integration tests (no browser, no API calls)
 npx puppeteer browsers install chrome     # once
 node scripts/e2e-browser.mjs              # real Chrome + extension + MCP server + scripted fake model
+node scripts/stress-browser.mjs           # ~2 min: 40-subtask task under injected model errors, worker killed mid-task,
+                                          # deep research on broken pages, storage churn (fake model, no API calls)
 npm run sync-schemas                      # after editing extension/src/tools/schemas.js
 ```
 
