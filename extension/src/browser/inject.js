@@ -362,3 +362,51 @@ export function setIndicator(on, label) {
   if (host.__pill) host.__pill.textContent = `⚡ ${label || 'HailBrowser is working'}`;
   return true;
 }
+
+/**
+ * Organic results on a search results page (DuckDuckGo, Bing, Google or any engine that puts
+ * result titles in headings). Redirect links are unwrapped; the engine's own pages are skipped.
+ */
+export function searchResults(max) {
+  const here = location.hostname.replace(/^www\./, '');
+  const unwrap = (href) => {
+    try {
+      let u = new URL(href, location.href);
+      const ddg = u.searchParams.get('uddg');
+      if (ddg) u = new URL(ddg);
+      else if (/(^|\.)google\./.test(u.hostname) && u.pathname === '/url') u = new URL(u.searchParams.get('q') || u.searchParams.get('url'));
+      else if (u.hostname.endsWith('bing.com') && u.pathname.startsWith('/ck/')) {
+        const p = u.searchParams.get('u') || '';
+        if (p.startsWith('a1')) u = new URL(atob(p.slice(2).replace(/-/g, '+').replace(/_/g, '/')));
+      }
+      if (!/^https?:$/.test(u.protocol)) return null;
+      const h = u.hostname.replace(/^www\./, '');
+      if (h === here || h.endsWith(`.${here}`)) return null;
+      u.hash = '';
+      return u.href;
+    } catch { return null; }
+  };
+  const text = (e) => (e?.innerText || e?.textContent || '').replace(/\s+/g, ' ').trim();
+  const out = [];
+  const seen = new Set();
+  const add = (a) => {
+    if (out.length >= max || !a?.href) return;
+    const url = unwrap(a.href);
+    if (!url || seen.has(url)) return;
+    const title = text(a.querySelector('h3,h2') || a).slice(0, 200);
+    if (title.length < 3) return;
+    // The snippet is the rest of the smallest block around the link that holds more than the title.
+    let box = a.parentElement;
+    for (let i = 0; box && i < 6 && text(box).length < title.length + 40; i++) box = box.parentElement;
+    const all = box ? text(box) : '';
+    const snippet = (all.length < 1500 ? all.replace(title, '') : '').trim().slice(0, 300);
+    seen.add(url);
+    out.push({ url, title, snippet });
+  };
+  for (const e of document.querySelectorAll('a.result__a, li.b_algo h2 a, #search a:has(h3), h2 a, h3 a, a h3, a h2')) add(e.closest('a') || e);
+  if (out.length < 3) {
+    for (const a of document.querySelectorAll('main a[href], #main a[href], body a[href]')) if (text(a).length > 25) add(a);
+  }
+  const head = text(document.body).slice(0, 3000);
+  return { results: out, blocked: /unusual traffic|not a robot|captcha|are you a human|anomaly in your/i.test(head) && out.length === 0 };
+}

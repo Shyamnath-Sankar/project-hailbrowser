@@ -48,6 +48,9 @@ export const DEFAULTS = {
     maxActions: 60,
   },
   tasks: { stepsPerSubtask: 40, maxTotalSteps: 400 },
+  research: { depth: 'standard', engine: 'duckduckgo', customUrl: '' },
+  memory: { enabled: true },
+  notifications: true,
   bridge: { enabled: true, port: 12306 },
   tools: { allowJavascript: true, showIndicator: true, groupTabs: true },
 };

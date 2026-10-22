@@ -17,6 +17,13 @@
         <span class="dot"></span><span id="bridge-label">Agents offline</span>
       </button>
     </div>
+    <button id="open-history" class="icon" title="History: chats and research" aria-label="History">
+      <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>
+    </button>
+    <button id="open-schedules" class="icon" title="Scheduled jobs" aria-label="Scheduled jobs">
+      <svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="16" rx="2.5"/><path d="M8 2.5v4M16 2.5v4M3 10h18"/><path d="M12 13v3l2 1.5"/></svg>
+      <span id="sched-dot" class="dot-badge" hidden></span>
+    </button>
     <button id="new-chat" class="icon" title="New chat" aria-label="New chat">
       <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
     </button>
@@ -34,6 +41,13 @@
     <ul id="control-tabs"></ul>
   </section>
 
+  <section id="resume" class="resume" hidden aria-live="polite">
+    <span class="r-ico" aria-hidden="true"></span>
+    <button class="r-main" data-r="view" title="Open this task"><span class="r-title"></span><span class="r-meta"></span></button>
+    <button class="btn small primary" data-r="resume">Resume</button>
+    <button class="t-x" data-r="dismiss" title="Hide" aria-label="Hide"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+  </section>
+
   <nav class="modes" role="tablist" aria-label="Mode">
     <button role="tab" data-mode="normal" aria-selected="true">
       <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Chat
@@ -41,10 +55,7 @@
     <button role="tab" data-mode="ultrafast" aria-selected="false">
       <svg viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>Fast
     </button>
-    <button role="tab" data-mode="tasks" aria-selected="false">
-      <svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/></svg>Tasks
-    </button>
-  </nav>
+</nav>
   <p id="mode-help" class="mode-help"></p>
 
   <main id="feed" aria-live="polite"></main>
@@ -52,15 +63,102 @@
   <footer class="composer" id="composer">
     <div class="composer-box">
       <textarea id="input" rows="1" placeholder="Ask or give a job…" title="Enter to send · Shift+Enter for a new line"></textarea>
-      <button id="send" class="send" title="Send" aria-label="Send">
-        <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-      </button>
-      <button id="stop" class="send stop" title="Stop" aria-label="Stop" hidden>
-        <svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>
-      </button>
+      <div class="composer-row">
+        <button type="button" class="use" data-use="research" aria-pressed="false" title="Search the web, read several sources and write a cited report">
+          <svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.8-4.8"/></svg>Research</button>
+        <button type="button" class="use" data-use="task" aria-pressed="false" title="Plan a long job into subtasks and work through them (pause and resume anytime)">
+          <svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/></svg>Long task</button>
+        <div id="depth" class="depth" role="radiogroup" aria-label="Research depth" hidden>
+          <button type="button" data-depth="quick" title="1 round, ~4 sources">Quick</button>
+          <button type="button" data-depth="standard" title="2 rounds, ~6 sources">Std</button>
+          <button type="button" data-depth="deep" title="3 rounds, ~10 sources">Deep</button>
+        </div>
+        <span class="grow"></span>
+        <button id="send" class="send" title="Send" aria-label="Send">
+          <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </button>
+        <button id="stop" class="send stop" title="Stop" aria-label="Stop" hidden>
+          <svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>
+        </button>
+      </div>
     </div>
     <div id="model-caption" class="caption"></div>
   </footer>
+  <div id="toast" class="toast" role="status" hidden></div>
+
+  <section id="history" class="sheet" hidden>
+    <header class="top">
+      <button class="icon" data-close aria-label="Back"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+      <div class="brand"><strong>History</strong></div>
+    </header>
+    <nav class="seg" role="tablist">
+      <button role="tab" data-htab="chats" aria-selected="true">Chats</button>
+      <button role="tab" data-htab="reports" aria-selected="false">Research</button>
+      <button role="tab" data-htab="tasks" aria-selected="false">Tasks</button>
+    </nav>
+    <div class="sheet-body"><div id="history-list" class="hlist"></div></div>
+  </section>
+
+  <section id="detail" class="sheet" hidden>
+    <header class="top">
+      <button class="icon" data-close aria-label="Back"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+      <div class="brand"><strong id="detail-title">Details</strong></div>
+    </header>
+    <div class="sheet-body" id="detail-body"></div>
+  </section>
+
+  <section id="schedules" class="sheet" hidden>
+    <header class="top">
+      <button class="icon" data-close aria-label="Back"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+      <div class="brand"><strong>Scheduled</strong><span class="sub">Runs in the background while Chrome is open</span></div>
+      <button id="new-schedule" class="btn small primary">New</button>
+    </header>
+    <div class="sheet-body">
+      <form id="schedule-form" class="card" hidden autocomplete="off"><div class="card-in">
+        <h3 data-form-title>New scheduled job</h3>
+        <label>What should it do?
+          <textarea name="goal" rows="3" placeholder="e.g. Open my GitHub notifications and summarize anything that needs a reply"></textarea></label>
+        <div class="grid2">
+          <label>Name <input name="title" placeholder="Optional" /></label>
+          <label>Run as
+            <select name="mode">
+              <option value="normal">Chat agent</option>
+              <option value="research">Research report</option>
+              <option value="tasks">Long task</option>
+              <option value="ultrafast">Fast</option>
+            </select></label>
+        </div>
+        <label>Start page <span class="inline-act"><button type="button" class="link" data-use-tab>Use current tab</button></span>
+          <input name="url" placeholder="https://… (optional)" spellcheck="false" /></label>
+        <label>Repeat
+          <select name="frequency">
+            <option value="daily">Every day</option>
+            <option value="weekdays">Weekdays</option>
+            <option value="weekly">On certain days</option>
+            <option value="interval">Every few hours</option>
+            <option value="once">Once</option>
+          </select></label>
+        <div class="grid2">
+          <label data-f="time">At <input type="time" name="time" value="09:00" /></label>
+          <label data-f="date" hidden>On <input type="date" name="date" /></label>
+          <label data-f="every" hidden>Every
+            <select name="everyMinutes">
+              <option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">hour</option>
+              <option value="120">2 hours</option><option value="240">4 hours</option><option value="360">6 hours</option><option value="720">12 hours</option>
+            </select></label>
+        </div>
+        <div class="days" data-f="days" hidden>
+          <label><input type="checkbox" value="1" checked>Mo</label><label><input type="checkbox" value="2">Tu</label><label><input type="checkbox" value="3" checked>We</label>
+          <label><input type="checkbox" value="4">Th</label><label><input type="checkbox" value="5" checked>Fr</label><label><input type="checkbox" value="6">Sa</label><label><input type="checkbox" value="0">Su</label>
+        </div>
+        <p class="hint" data-preview></p>
+        <div class="row end"><button type="button" class="btn ghost" data-cancel>Cancel</button><button type="submit" class="btn primary">Save</button></div>
+      </div></form>
+      <div id="schedule-list" class="slist"></div>
+      <div class="runs-head"><h4>Recent runs</h4><button type="button" class="link" id="clear-runs">Clear</button></div>
+      <div id="run-list" class="rlist"></div>
+    </div>
+  </section>
 
   <section id="settings" class="settings" hidden>
     <header class="top">
@@ -120,10 +218,35 @@
       </div></div>
 
       <div class="card"><div class="card-in">
-        <h3>Tasks</h3>
+        <h3>Memory</h3>
+        <p class="hint">Facts HailBrowser knows about you, used in chats, tasks and scheduled jobs (never shared with coding agents). Say "remember…" in chat, or add one here.</p>
+        <label class="check"><input type="checkbox" name="memory.enabled" /> Use memory</label>
+        <ul id="memory-list" class="mem-list"></ul>
+        <div class="mem-add">
+          <input id="memory-text" placeholder="e.g. I live in Zurich and prefer prices in CHF" spellcheck="false" />
+          <input id="memory-site" placeholder="Only on site (optional), e.g. github.com" spellcheck="false" />
+          <div class="row end"><button type="button" class="btn ghost danger small" id="memory-clear">Forget all</button><button type="button" class="btn small" id="memory-add">Add</button></div>
+        </div>
+      </div></div>
+
+      <div class="card"><div class="card-in">
+        <h3>Research</h3>
+        <p class="hint">Searches in a background tab of this browser, reads the best sources and writes a report with citations.</p>
+        <label>Search engine
+          <select name="research.engine">
+            <option value="duckduckgo">DuckDuckGo</option><option value="bing">Bing</option><option value="google">Google</option><option value="custom">Custom URL</option>
+          </select></label>
+        <label data-show="research.engine=custom">Search URL (%s = query) <input name="research.customUrl" placeholder="https://search.example.com/?q=%s" spellcheck="false" /></label>
+        <label>Default depth
+          <select name="research.depth"><option value="quick">Quick (~4 sources)</option><option value="standard">Standard (~6 sources)</option><option value="deep">Deep (~10 sources)</option></select></label>
+      </div></div>
+
+      <div class="card"><div class="card-in">
+        <h3>Tasks &amp; schedules</h3>
         <p class="hint">Long jobs are split into subtasks. These limits keep a runaway task in check.</p>
         <label>Steps per subtask <input type="number" name="tasks.stepsPerSubtask" min="5" max="200" /></label>
         <label>Total steps before asking you <input type="number" name="tasks.maxTotalSteps" min="20" max="5000" /></label>
+        <label class="check"><input type="checkbox" name="notifications" /> Notify me when scheduled jobs finish or a task needs me</label>
       </div></div>
 
       <div class="card"><div class="card-in">

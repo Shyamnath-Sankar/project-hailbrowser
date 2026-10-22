@@ -66,13 +66,45 @@ function fakeTaskAgent(body) {
   return call('task_complete', { summary: `Lesson ${n} marked complete` });
 }
 
+const seen = { unattended: false, memoryInPrompt: false };
+
+// Text of the newest user message, and the tool results that came after it (this turn only).
+function turn(body) {
+  let i = body.messages.length - 1;
+  while (i > 0 && body.messages[i].role !== 'user') i--;
+  const m = body.messages[i];
+  const text = typeof m.content === 'string' ? m.content : m.content.map((p) => p.text || '').join('');
+  return { text, tools: body.messages.slice(i + 1).filter((x) => x.role === 'tool') };
+}
+const toolCall = (name, args) => ({ choices: [{ message: { content: '', tool_calls: [{ id: `c${Math.random().toString(36).slice(2, 8)}`, type: 'function', function: { name, arguments: JSON.stringify(args) } }] } }] });
+const say = (content) => ({ choices: [{ message: { content } }] });
+
+// Research: planner -> extract per source -> writer (the picker and gap check are not needed for 3 results at depth Quick).
+function fakeResearch(system, user) {
+  if (system.startsWith('You plan web research')) return say(JSON.stringify({ queries: ['alpha facts', 'alpha history'], angle: 'What alpha is.' }));
+  if (system.startsWith('You read one web page')) {
+    const n = /SOURCE: Source (\d)/.exec(user)?.[1];
+    return say(JSON.stringify({ relevant: true, summary: `Source ${n} explains alpha.`, facts: [{ claim: `Alpha fact number ${n}`, quote: 'alpha' }], date: null }));
+  }
+  if (system.startsWith('You review research notes')) return say('{"enough": true, "queries": []}');
+  if (system.startsWith('You choose which search results')) return say('{"picks": [1, 2, 3]}');
+  if (system.startsWith('You write a research report')) {
+    assert.match(user, /\[3\] Source 3/);
+    return say('Alpha is well documented [1][2], and its history is covered too [3]. A made-up claim [9].\n\n## Details\n- First point [1]\n- Second point [2]');
+  }
+  return null;
+}
+
 // Scripted model: ultrafast decisions + a two-step normal tool loop.
 function fakeModel(body) {
   const system = body.messages[0].content;
+  const research = fakeResearch(system, body.messages[1]?.content?.[0]?.text || body.messages[1]?.content || '');
+  if (research) return research;
   if (system.startsWith('You plan long browser tasks')) {
     return { choices: [{ message: { content: JSON.stringify({ subtasks: [1, 2, 3].map((n) => ({ title: `Complete lesson ${n}`, detail: `Open lesson ${n} and mark it complete` })) }) } }] };
   }
   if (system.includes('You are working on ONE subtask')) return fakeTaskAgent(body);
+  if (system.startsWith('You finish a long browser task')) return say('All 3 lessons are complete. The lesson 2 quiz was answered with 4.');
   if (/Return only its letter/.test(system)) {
     // Stand-in for a letter-choice decision model (Together Tev1 request/response format).
     assert.equal(body.max_tokens, 8);
@@ -103,7 +135,25 @@ function fakeModel(body) {
     else decision = { operation: 'CLICK', target: index(line('Search')) };
     return { choices: [{ message: { content: JSON.stringify(decision) } }] };
   }
-  const toolMsgs = body.messages.filter((m) => m.role === 'tool');
+  if (/This is a SCHEDULED run/.test(system)) seen.unattended = true;
+  const t = turn(body);
+  if (/Remember that/.test(t.text)) {
+    return t.tools.length ? say('Noted, I will remember that.') : toolCall('remember', { fact: 'Favourite city is Lisbon' });
+  }
+  if (/What is my favourite city/.test(t.text)) {
+    seen.memoryInPrompt = /MEMORY[\s\S]*Favourite city is Lisbon/.test(system);
+    return say(seen.memoryInPrompt ? 'Your favourite city is Lisbon.' : 'I do not know.');
+  }
+  if (/Find everything about alpha/.test(t.text)) return toolCall('start_research', { question: 'What is alpha?', depth: 'quick' });
+  if (/What did the research find/.test(t.text)) {
+    const seenReport = body.messages.some((m) => m.role === 'assistant' && /Alpha is well documented/.test(m.content || ''));
+    return say(seenReport ? 'The research says alpha is well documented.' : 'I have no research results.');
+  }
+  if (/Every weekday/.test(t.text)) {
+    return t.tools.length ? say('I proposed the schedule.')
+      : toolCall('schedule_task', { goal: 'Read this page and report what it says', title: 'Fixture check', frequency: 'weekdays', time: '09:00', url: base });
+  }
+  const toolMsgs = t.tools;
   if (!toolMsgs.length) {
     return { choices: [{ message: { content: 'Reading the page.', tool_calls: [{ id: 'c1', type: 'function', function: { name: 'get_page_text', arguments: '{}' } }] } }] };
   }
@@ -117,6 +167,18 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'text/html' });
     return res.end(`<!doctype html><title>Lesson ${lesson[1]}</title><h1>Lesson ${lesson[1]}</h1><p>Some lesson content.</p>
       <button onclick="fetch('/done/${lesson[1]}').then(() => document.body.append(' Completed!'))">Mark lesson complete</button>`);
+  }
+  if (req.url.startsWith('/search')) {
+    const other = `http://localhost:${server.address().port}`;
+    res.writeHead(200, { 'content-type': 'text/html' });
+    return res.end(`<!doctype html><title>Search</title><h1>Results</h1>${[1, 2, 3].map((n) => `
+      <div class="r"><h3><a href="${other}/src/${n}">Source ${n}: all about alpha</a></h3><p>Snippet ${n} about alpha and its history.</p></div>`).join('')}
+      <a href="/search?q=next">Next page</a>`);
+  }
+  const src = /^\/src\/(\d)$/.exec(req.url);
+  if (src) {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    return res.end(`<!doctype html><title>Source ${src[1]}</title><main><h1>Source ${src[1]}</h1><p>${'Alpha is a thing worth reading about. '.repeat(20)}</p></main>`);
   }
   if (req.url.startsWith('/lab')) {
     res.writeHead(200, { 'content-type': 'text/html' });
@@ -344,9 +406,14 @@ try {
   await panel.screenshot({ path: 'docs/settings.png' });
   step('Custom (OpenAI-compatible) shows a Base URL field and saves it');
 
-  // ---- Tasks mode: long-horizon run driven through the real side panel ----
+  // ---- Long task (composer toggle in Chat): long-horizon run driven through the real side panel ----
   await panel.evaluate(() => document.querySelector('#close-settings').click());
-  const readTask = () => sw.evaluate(() => chrome.storage.local.get('task').then((r) => r.task || null));
+  const readTask = () => sw.evaluate(async () => {
+    const idx = (await chrome.storage.local.get('tasks:index'))['tasks:index'] || [];
+    if (!idx[0]) return null;
+    const key = `tasks:${idx[0].id}`;
+    return (await chrome.storage.local.get(key))[key];
+  });
   const waitTask = async (pred, label, ms = 30000) => {
     const end = Date.now() + ms;
     for (;;) {
@@ -356,26 +423,137 @@ try {
       await new Promise((r) => setTimeout(r, 150));
     }
   };
-  await panel.evaluate(() => document.querySelector('[data-mode="tasks"]').click());
-  await panel.waitForSelector('#input');
-  await panel.screenshot({ path: 'docs/tasks-empty.png' });
+  await panel.evaluate(() => document.querySelector('[data-mode="normal"]').click());
+  await panel.click('[data-use="task"]');
+  assert.equal(await panel.$eval('[data-use="task"]', (b) => b.getAttribute('aria-pressed')), 'true');
   await panel.type('#input', 'Complete all 3 lessons of this course');
   await panel.keyboard.press('Enter');
   const asking = await waitTask((t) => t?.status === 'waiting_user', 'waiting for the user');
   assert.match(asking.question, /2 \+ 2/);
   assert.equal(asking.subtasks.filter((x) => x.status === 'done').length, 1);
-  await panel.waitForSelector('[data-answer]');
+  await panel.waitForSelector('#feed .task-slot [data-answer]');
+  assert.equal(await panel.$eval('[data-use="task"]', (b) => b.getAttribute('aria-pressed')), 'false', 'the toggle turns off after sending');
+  assert.match(await panel.$$eval('#feed .msg.user', (e) => e.at(-1).textContent), /Long task/);
   await panel.screenshot({ path: 'docs/tasks-ask.png' });
-  step('task planned 3 subtasks, finished lesson 1, paused to ask the user');
+  step('Long task toggle: task card inline in the chat, planned 3 subtasks, finished lesson 1, paused to ask the user');
 
-  await panel.type('[data-answer]', '4');
-  await panel.click('[data-act="task_answer"]');
+  // In a new chat the task card is gone, so the resume banner appears and opens it.
+  await panel.click('#new-chat');
+  await panel.waitForSelector('#resume:not([hidden])');
+  assert.match(await panel.$eval('#resume', (e) => e.textContent), /Needs you: Lesson 2 has a quiz/);
+  await panel.click('#resume [data-r="resume"]');
+  await panel.waitForSelector('#detail:not([hidden]) [data-answer]');
+  step('resume banner shows the waiting task from another chat and opens it');
+
+  await panel.type('#detail [data-answer]', '4');
+  await panel.click('#detail [data-act="task_answer"]');
   const finished = await waitTask((t) => t?.status === 'done', 'done');
   assert.deepEqual([...completed].sort(), ['1', '2', '3']);
   assert.equal(finished.notes.filter((x) => /Lesson \d completed/.test(x)).length, 3);
+  assert.match(finished.answer, /All 3 lessons are complete/, 'a finished task writes a real result, not a list of steps');
+  await panel.waitForFunction(() => /All 3 lessons are complete/.test(document.querySelector('#detail .answer')?.textContent || ''));
   await new Promise((r) => setTimeout(r, 300));
   await panel.screenshot({ path: 'docs/tasks.png' });
+  await panel.click('#detail [data-close]');
   step(`task finished: ${finished.subtasks.length}/${finished.subtasks.length} subtasks, ${finished.steps} steps, lessons ${[...completed].sort().join(',')} completed on the server`);
+
+  // ---- Memory + saved chats ----
+  const store = (key) => sw.evaluate((k) => chrome.storage.local.get(k).then((r) => r[k]), key);
+  const waitFor = async (fn, label, ms = 20000) => {
+    const end = Date.now() + ms;
+    for (;;) {
+      const v = await fn();
+      if (v) return v;
+      if (Date.now() > end) throw new Error(`Timed out waiting for ${label}`);
+      await new Promise((r) => setTimeout(r, 150));
+    }
+  };
+  const chatSend = async (text) => {
+    await panel.waitForSelector('#composer:not([hidden]) #send:not([hidden])');
+    await panel.type('#input', text);
+    await panel.keyboard.press('Enter');
+    await panel.waitForFunction(() => !document.querySelector('#stop:not([hidden])') && !document.querySelector('.typing'), { timeout: 20000 });
+  };
+  await panel.evaluate(() => document.querySelector('[data-mode="normal"]').click());
+  await chatSend('Remember that my favourite city is Lisbon');
+  const mem = await waitFor(async () => (await store('memory'))?.facts?.find((f) => /Lisbon/.test(f.text)), 'memory');
+  assert.equal(mem.source, 'chat');
+  await panel.waitForFunction(() => /remembered/.test(document.querySelector('#feed').textContent));
+  await chatSend('What is my favourite city?');
+  assert.ok(seen.memoryInPrompt, 'the saved fact is in the next prompt');
+  await panel.waitForFunction(() => /Your favourite city is Lisbon/.test(document.querySelector('#feed').textContent));
+  step('chat "remember…" saves to memory automatically, and later prompts include it');
+
+  await panel.reload();
+  await panel.waitForFunction(() => document.querySelectorAll('.msg.user').length === 2 && /Your favourite city is Lisbon/.test(document.querySelector('#feed').textContent));
+  const chats = await store('chats:index');
+  assert.equal(chats[0].turns, 2);
+  step('chat is saved and redrawn after the panel reloads');
+
+  // ---- Schedules: proposed in chat, confirmed by the user, run in a background tab ----
+  await chatSend('Every weekday at 09:00 check the fixture page for me');
+  await panel.waitForSelector('.proposal [data-accept="1"]');
+  assert.match(await panel.$eval('.proposal', (e) => e.textContent), /Fixture check[\s\S]*Weekdays at 09:00/);
+  assert.equal(((await store('schedules:index')) || []).length, 0, 'nothing is scheduled before the user confirms');
+  await panel.click('.proposal [data-accept="1"]');
+  await panel.waitForFunction(() => /Scheduled ✓/.test(document.querySelector('.proposal').textContent));
+  await panel.screenshot({ path: 'docs/chat.png' });
+  const [sched] = await waitFor(() => store('schedules:index'), 'schedule saved');
+  const saved = await store(`schedules:${sched.id}`);
+  assert.equal(saved.when.type, 'daily');
+  assert.deepEqual(saved.when.days, [1, 2, 3, 4, 5]);
+  assert.ok(saved.nextRunAt > Date.now());
+  const alarm = await sw.evaluate((id) => chrome.alarms.get(`sched:${id}`), sched.id);
+  assert.equal(alarm.scheduledTime, saved.nextRunAt);
+  step(`schedule_task proposal confirmed: "${saved.title}", next run ${new Date(saved.nextRunAt).toLocaleString()}, alarm set`);
+
+  const tabsBefore = await sw.evaluate(() => chrome.tabs.query({}).then((t) => t.length));
+  await panel.click('#open-schedules');
+  await panel.waitForSelector(`.sched[data-id="${sched.id}"] [data-s="run"]`);
+  await panel.click(`.sched[data-id="${sched.id}"] [data-s="run"]`);
+  const runEntry = await waitFor(async () => (await store('scheduleRuns'))?.find((r) => r.scheduleId === sched.id && r.status !== 'running'), 'scheduled run');
+  assert.equal(runEntry.status, 'done', JSON.stringify(runEntry));
+  assert.match(runEntry.summary, /Page says: Fixture Search/);
+  assert.ok(seen.unattended, 'scheduled runs use the unattended rules');
+  assert.equal(await sw.evaluate(() => chrome.tabs.query({}).then((t) => t.length)), tabsBefore, 'the job tab is closed after a successful run');
+  await panel.waitForSelector('.run .pill.done');
+  assert.equal((await store(`schedules:${sched.id}`)).nextRunAt, saved.nextRunAt, 'a manual run does not move the schedule');
+  await panel.screenshot({ path: 'docs/schedules.png' });
+  await panel.click('#schedules [data-close]');
+  step(`"Run now" ran the job unattended in a background tab: ${runEntry.summary.split('\n')[0]}`);
+
+  // ---- Research: search, read sources in tabs, cited report ----
+  await sw.evaluate(async (base) => {
+    const { settings } = await chrome.storage.local.get('settings');
+    settings.research = { engine: 'custom', customUrl: `${base}/search?q=%s`, depth: 'quick' };
+    await chrome.storage.local.set({ settings });
+  }, base);
+  // No toggle: the chat agent decides this needs research and hands it over.
+  await chatSend('Find everything about alpha on the web');
+  const reportIdx = await waitFor(async () => (await store('reports:index'))?.find((r) => ['done', 'failed'].includes(r.status)), 'research report', 40000);
+  const rep = await store(`reports:${reportIdx.id}`);
+  assert.equal(rep.status, 'done', rep.error || JSON.stringify(rep.log.slice(-3)));
+  assert.equal(rep.sources.filter((x) => x.status === 'ok').length, 3);
+  assert.deepEqual(rep.queries.map((q) => q.q), ['alpha facts', 'alpha history']);
+  assert.doesNotMatch(rep.answer, /\[9\]/, 'citations to missing sources are dropped');
+  await panel.waitForFunction(() => document.querySelectorAll('.answer .cite').length >= 4);
+  assert.equal(await panel.$$eval('.answer .cite', (a) => a[0].getAttribute('href')), `http://localhost:${server.address().port}/src/1`);
+  assert.equal(await sw.evaluate(() => chrome.tabs.query({}).then((t) => t.filter((x) => /\/src\/|\/search\?/.test(x.url)).length)), 0, 'research tabs are closed');
+  await new Promise((r) => setTimeout(r, 200));
+  await panel.screenshot({ path: 'docs/research.png' });
+  step(`chat handed off to research: ${rep.queries.length} searches, ${rep.sources.length} sources read, cited report inline; tabs cleaned up`);
+
+  await chatSend('What did the research find?');
+  await panel.waitForFunction(() => /The research says alpha is well documented/.test(document.querySelector('#feed').textContent));
+  step('follow-up questions in the chat can use the research report');
+
+  // ---- History lists chats and reports ----
+  await panel.click('#open-history');
+  await panel.waitForSelector('#history-list .hrow');
+  await panel.click('[data-htab="reports"]');
+  await panel.waitForFunction(() => /What is alpha\?/.test(document.querySelector('#history-list').textContent));
+  await panel.click('#history [data-close]');
+  step('history lists saved chats and research reports');
 
   console.log('\nE2E PASSED');
 } finally {

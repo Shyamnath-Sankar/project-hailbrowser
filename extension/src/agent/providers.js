@@ -4,6 +4,15 @@
 //   {role:'tool', results:[{id,name,content:[...same parts], isError}]}
 // Two wire formats cover every provider: Anthropic Messages and OpenAI chat completions.
 
+const RETRY_STATUS = new Set([408, 429, 500, 502, 503, 504, 529]);
+const RETRIES = 3;
+
+const wait = (ms, signal) => new Promise((resolve, reject) => {
+  const t = setTimeout(resolve, ms);
+  signal?.addEventListener('abort', () => { clearTimeout(t); reject(Object.assign(new Error('Aborted'), { name: 'AbortError' })); }, { once: true });
+});
+
+/** POST JSON with retries for rate limits, overloads, 5xx and dropped connections (honours Retry-After, max 20 s). */
 export async function postJson(url, headers, body, signal) {
   for (let attempt = 0; ; attempt++) {
     let res;
@@ -11,10 +20,12 @@ export async function postJson(url, headers, body, signal) {
       res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body), signal });
     } catch (e) {
       if (e.name === 'AbortError') throw e;
+      if (attempt < RETRIES) { await wait(800 * 2 ** attempt, signal); continue; }
       throw new Error(`Could not reach ${new URL(url).host}: ${e.message}`);
     }
-    if ([429, 503, 529].includes(res.status) && attempt < 2) {
-      await new Promise((r) => setTimeout(r, 600 * 2 ** attempt));
+    if (RETRY_STATUS.has(res.status) && attempt < RETRIES) {
+      const after = Number(res.headers?.get?.('retry-after'));
+      await wait(Number.isFinite(after) && after > 0 ? Math.min(after * 1000, 20000) : 700 * 2 ** attempt, signal);
       continue;
     }
     const text = await res.text();

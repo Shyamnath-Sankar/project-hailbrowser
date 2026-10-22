@@ -5,6 +5,7 @@ import { executeTool } from '../tools/execute.js';
 import { resolveTab } from '../browser/page.js';
 import { chat } from './providers.js';
 import { NORMAL_SYSTEM } from './prompts.js';
+import { localNow } from './schedule.js';
 
 const KEEP_IMAGES = 2;
 const KEEP_FULL_RESULTS = 12;
@@ -46,7 +47,7 @@ export async function runNormal({ goal, messages, settings, signal, emit, tabId,
   const extraNames = new Set(extraTools.map((t) => t.name));
   const limit = maxSteps || settings.normal.maxSteps;
   const tab = await resolveTab(tabId).catch(() => null);
-  const context = tab ? `\n\n[Current tab ${tab.id}: ${tab.title} — ${tab.url}]` : '';
+  const context = `${tab ? `\n\n[Current tab ${tab.id}: ${tab.title} — ${tab.url}]` : '\n'}\n[Now: ${localNow()}]`;
   // A previous turn interrupted mid-tool-call leaves calls without results; close them out.
   const last = messages[messages.length - 1];
   if (last?.role === 'assistant' && last.toolCalls?.length) {

@@ -4,14 +4,17 @@
 
 **An open-source browser agent that lives in your Chrome.** Chat with it in the side panel using any model you like, switch to **Ultrafast** mode for snappy form and search flows, or plug it into **Claude Code, OpenCode, Cursor, Codex** and any other MCP client so your coding agent can use your real, logged-in browser.
 
-<p align="center"><img src="docs/tasks-ask.png" width="300" alt="Tasks mode: a long job split into subtasks, paused to ask the user a question" /> <img src="docs/sidepanel.png" width="300" alt="Chat feed showing a Fast run and a coding agent's tool calls" /></p>
+<p align="center"><img src="docs/research.png" width="260" alt="Research mode: a cited report written from sources read in the browser" /> <img src="docs/tasks-ask.png" width="260" alt="Tasks mode: a long job split into subtasks, paused to ask the user a question" /> <img src="docs/chat.png" width="260" alt="Chat that remembers a preference and proposes a scheduled job" /></p>
 
 ## What you get
 
 | | |
 |---|---|
 | **Side panel agent** | Chat with the current tab. Bring your own key: Anthropic, OpenAI, OpenRouter, Gemini, Together AI, Groq, DeepSeek, Ollama, LM Studio, or any OpenAI-compatible endpoint. |
-| **Three modes** | **Chat**: a full tool-calling agent (read page, click, type, screenshots, JS). **⚡ Fast**: one decision request per step, no screenshots — inspired by [jev-ultrafast](https://github.com/browser-use/jev-ultrafast). **Tasks**: long jobs (finish a course, work through a list) split into subtasks with saved progress. |
+| **Four modes** | **Chat**: a full tool-calling agent (read page, click, type, screenshots, JS). **⚡ Fast**: one decision request per step, no screenshots — inspired by [jev-ultrafast](https://github.com/browser-use/jev-ultrafast). **Tasks**: long jobs (finish a course, work through a list) split into subtasks with saved progress. **Research**: searches the web, reads the best sources in background tabs and writes a report that cites every claim. |
+| **Remembers you** | Say "remember…" in chat and it keeps the fact (your city, units, which account to use on a site) for later chats, tasks and scheduled jobs. Edit or delete memories in Settings. |
+| **Works while you're away** | Schedule any goal — once, daily, weekdays, or every few hours — or just say "every morning at 9, …" in chat. Jobs run in a background tab and send a notification with the result. |
+| **Nothing gets lost** | Chats, tasks and research reports are saved. Paused or waiting tasks show a **Resume** banner; History lists everything; chats and reports export as Markdown. |
 | **MCP bridge** | `hailbrowser-mcp` exposes 18 browser tools to any MCP client. Several agents can share one browser at once. |
 | **Real browser, real input** | Uses `chrome.debugger` for trusted mouse/keyboard events and screenshots in background tabs. No `--remote-debugging-port`, no separate Chrome profile. |
 | **Visible & stoppable** | A glow shows which tab is being driven; every step appears in the side panel; one click stops a run. |
@@ -26,7 +29,23 @@ For jobs too long for one chat — completing a course, processing a list of pag
 4. **Ask**: for logins, payments, CAPTCHAs or answers it isn't sure about, it stops and asks you in the panel, then continues with your reply.
 5. **Retry**: a failed subtask is retried once with the issue noted; if it fails again it asks you how to proceed (or say "skip").
 
-Budgets (steps per subtask, total steps before checking in) are in Settings → Tasks.
+Budgets (steps per subtask, total steps before checking in) are in Settings → Tasks. Every task is kept in a list: start a new one while another is paused, and come back to any of them.
+
+## How Research works
+
+1. **Plan**: your model writes 2–4 search queries that cover the question from different angles.
+2. **Search**: each query runs in a background tab on DuckDuckGo (or Bing, Google, or any search URL). If an engine shows a CAPTCHA or nothing useful, it falls back to another one.
+3. **Read**: the most promising results (different sites first) open in parallel background tabs of *your* browser, so pages that need JavaScript or your logins work too. Each page is condensed into a short summary plus exact quotes.
+4. **Fill gaps**: Standard and Deep runs check what's missing or rests on one source, and search again.
+5. **Write**: the report answers first, then gives details; every claim cites a numbered source, and citations to sources that don't exist are removed. Copy it, download it, or **⏰ Repeat** it on a schedule.
+
+Depth: **Quick** (1 round, ~4 sources), **Standard** (2 rounds, ~6), **Deep** (3 rounds, ~10). Tabs are closed when it finishes.
+
+## Memory, schedules and history
+
+- **Memory** is a short list of facts in `chrome.storage.local`, added to the prompt of side-panel chats, tasks and scheduled jobs (never to runs started by external coding agents). The agent can only *suggest* a memory; it's saved without asking only when your own message asked it to remember something, so a web page can't plant one.
+- **Schedules** use `chrome.alarms`. If Chrome was closed at run time, the job runs once when Chrome starts again. If HailBrowser is busy, the job waits in a queue. Scheduled runs follow stricter rules: they never send, buy, post or delete anything unless the goal says so, and they report what needs you instead of waiting. A schedule the agent proposes in chat is only created when you press **Create**.
+- **History** (clock icon) lists saved chats, research reports and tasks.
 
 ## How Ultrafast works
 
@@ -137,7 +156,7 @@ No build step: the extension is plain ES modules; reload it in `chrome://extensi
 
 ## Limits
 
-Shadow DOM, cross-origin iframes, canvas apps, file uploads and pop-up windows are not fully supported yet. Ultrafast sees only on-screen elements (it scrolls to find more). Model `DONE` is a claim, not proof — verify important outcomes.
+Shadow DOM, cross-origin iframes, canvas apps, file uploads and pop-up windows are not fully supported yet. Research can't read PDFs yet. Scheduled jobs only run while Chrome is open, and one run happens at a time (others wait in a queue). Ultrafast sees only on-screen elements (it scrolls to find more). Model `DONE` is a claim, not proof — verify important outcomes.
 
 ## Credits
 

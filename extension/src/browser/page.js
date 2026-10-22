@@ -6,9 +6,13 @@ let currentTabId = null;
 let currentTabListener = null;
 const shotScale = new Map(); // tabId -> CSS px per screenshot px
 
-export function setCurrentTab(tabId) {
+export function setCurrentTab(tabId, { quiet = false } = {}) {
   currentTabId = tabId;
-  currentTabListener?.(tabId);
+  if (!quiet) currentTabListener?.(tabId);
+}
+
+export function currentTab() {
+  return currentTabId;
 }
 
 /** Called whenever an agent switches to, opens or navigates a tab. */
