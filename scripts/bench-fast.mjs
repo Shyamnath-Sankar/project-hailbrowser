@@ -195,7 +195,9 @@ try {
     const ok = (task.expect == null || passed(task, got)) && (!task.answer || answered(task, r.text));
     const actions = Number(/(\d+) actions/.exec(r.text)?.[1] ?? /(\d+) steps?/i.exec(r.text)?.[1] ?? NaN);
     const status = r.isError ? 'error' : /✅|Done/.test(r.text.split('\n')[0]) ? 'done' : /Blocked|⚠️/.test(r.text) ? 'blocked' : 'other';
-    rows.push({ task: task.name, pass: ok, status, actions, secs, got: got ?? null, note: r.isError ? r.text.slice(0, 160) : '' });
+    const calls = /(\d+) decisions · (\d+) text calls/.exec(r.text);
+    const decisions = Number(calls?.[1] ?? 0), textCalls = Number(calls?.[2] ?? 0);
+    rows.push({ task: task.name, pass: ok, status, actions, secs, decisions, textCalls, got: got ?? null, note: r.isError ? r.text.slice(0, 160) : '' });
     if (process.env.BENCH_VERBOSE) console.log(r.text);
     console.log(`${ok ? '✅' : '❌'} ${task.name.padEnd(13)} ${status.padEnd(8)} ${String(actions).padStart(3)} actions ${secs.toFixed(1).padStart(6)}s  ${task.answer ? `answer: ${(answerOf(r.text) || '(none)').replace(/\s+/g, ' ').slice(0, 90)}` : got == null ? '(page saw nothing)' : `page: ${got}`}${r.isError ? `  ${r.text.slice(0, 120)}` : ''}`);
   }
@@ -208,5 +210,7 @@ try {
 const pass = rows.filter((r) => r.pass).length;
 const falseDone = rows.filter((r) => !r.pass && r.status === 'done').length;
 const avg = rows.reduce((a, r) => a + r.secs, 0) / (rows.length || 1);
+const sum = (k) => rows.reduce((a, r) => a + (r[k] || 0), 0);
 console.log(`\nScore: ${pass}/${rows.length} passed · ${falseDone} false "done" · avg ${avg.toFixed(1)}s per task`);
+if (MODE === 'ultrafast') console.log(`Model calls: ${sum('decisions')} decisions · ${sum('textCalls')} text-helper calls · ${sum('actions') || 0} actions in total`);
 if (process.env.BENCH_OUT) fs.writeFileSync(process.env.BENCH_OUT, JSON.stringify({ mode: MODE, backend: BACKEND, model: MODE === 'normal' ? CHAT_MODEL : MODEL, rows }, null, 2));

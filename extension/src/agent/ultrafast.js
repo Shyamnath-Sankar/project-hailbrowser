@@ -10,6 +10,7 @@ import { answerQuestion, buildActions, chooseValue, decide, decideWithChatModel,
 import { onSite, sitesFromGoal } from './sites.js';
 
 const OBSERVE = { viewportOnly: true, maxElements: 400, maxText: 6000 };
+const FRESHNESS = { ...OBSERVE, light: true }; // same elements and form values, no context/text extras
 const LOW_CONFIDENCE = 0.55; // below this the chat model takes the step
 const MAX_ESCALATIONS = 6;
 const ANSWER_TEXT = 12000; // characters of the final page given to the answer step
@@ -56,7 +57,7 @@ async function act(tabId, action, snap, text) {
     return;
   }
   // Scoped freshness guard: same document URL, same form values, same target semantics.
-  const now = await page.observe(tabId, OBSERVE);
+  const now = await page.observe(tabId, FRESHNESS);
   if (now.url !== snap.url || now.formKey !== snap.formKey || elementKey(now, action.node) !== elementKey(snap, action.node)) {
     throw new StaleError('Page changed since the decision');
   }

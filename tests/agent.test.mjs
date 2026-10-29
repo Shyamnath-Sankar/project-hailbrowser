@@ -118,11 +118,13 @@ test('inception backend: native choice questions on the provider /decisions endp
   }));
   const d = await decide({ snap, actions, goal: 'search', history: [], settings, decisionCfg: cfg });
   assert.equal(actions.find((a) => a.id === d.choice).label, 'Search');
+  // A CLICK needs no extract request.
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, 'https://api.inceptionlabs.ai/v1/decisions');
-  assert.equal(calls[0].body.model, 'mercury-decide');
-  assert.equal(calls[0].headers.authorization, 'Bearer k');
-  assert.equal(calls[0].body.questions.operation.type, 'choice');
+  const main = calls[0];
+  assert.equal(main.url, 'https://api.inceptionlabs.ai/v1/decisions');
+  assert.equal(main.body.model, 'mercury-decide');
+  assert.equal(main.headers.authorization, 'Bearer k');
+  assert.equal(main.body.questions.operation.type, 'choice');
 });
 
 test('llm backend: one call returns operation, target and text', async () => {
@@ -383,4 +385,30 @@ test('phase 4: questions get an answer read from the final page text', async () 
   assert.match(calls[0].body.messages[1].content, /JBL Tune 510 ₹3,499/);
   mockFetch(() => ({ choices: [{ message: { content: '{"answer":"The page does not say.","found":false}' } }] }));
   assert.equal((await answerQuestion({ goal: 'warranty?', page: { title: 'x', url: 'https://s.test', text: '' }, cfg, model: 'm' })).found, false);
+});
+
+test('phase 5: text to type is extracted from the goal only, right after a TYPE_TEXT decision', async () => {
+  const { goalSpan } = await import('../extension/src/agent/decision.js');
+  const goal = 'Find trains from Zurich to Paris';
+  assert.equal(goalSpan([{ text: 'Zurich', start: 17, end: 23, confidence: 0.99 }], goal), 'Zurich');
+  assert.equal(goalSpan([{ text: 'Berlin', start: 0, end: 6, confidence: 0.99 }], goal), null, 'not in the goal');
+  assert.equal(goalSpan([{ text: 'Paris', start: 27, end: 32, confidence: 0.2 }], goal), null, 'low confidence');
+  assert.equal(goalSpan([], goal), null);
+
+  const { actions } = buildActions(snap);
+  const settings = structuredClone(DEFAULTS);
+  settings.ultrafast.backend = 'inception';
+  const cfg = { id: 'inception', baseUrl: 'https://api.inceptionlabs.ai/v1', apiKey: 'k' };
+  const calls = mockFetch((body) => (body.questions.value
+    ? { answers: { value: { type: 'extract', spans: { field: [{ text: 'Paris', start: 27, end: 32, confidence: 0.98 }] } } } }
+    : { answers: {
+      operation: { choice: 'TYPE_TEXT', confidence: 0.9, probabilities: { CLICK: 0.05, TYPE_TEXT: 0.9, SELECT: 0.05, PRESS_ENTER: 0, SCROLL_DOWN: 0, WAIT: 0, DONE: 0, BLOCKED: 0 } },
+      type_text_target: { choice: '1', confidence: 0.9, probabilities: { 1: 1 } },
+    } }));
+  const d = await decide({ snap, actions, goal, history: [], settings, decisionCfg: cfg });
+  assert.equal(d.operation, 'TYPE_TEXT');
+  assert.equal(d.text, 'Paris');
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].body.questions.value.source, 'goal');
+  assert.deepEqual(calls[1].body.state, { goal });
 });

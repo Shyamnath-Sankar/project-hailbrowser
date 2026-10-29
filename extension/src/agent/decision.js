@@ -145,6 +145,15 @@ function resolve(operation, target, targets, controls) {
   throw new Error(`Decision chose unknown operation "${operation}"; no action executed.`);
 }
 
+const MIN_SPAN = 0.5;
+/** The best extracted span, only if it is confident and an exact piece of the goal at its offsets. */
+export function goalSpan(spans, goal) {
+  const s = Array.isArray(spans) ? spans[0] : null;
+  if (!s || typeof s.text !== 'string' || !s.text.trim() || !(s.confidence >= MIN_SPAN)) return null;
+  if (goal.slice(s.start, s.end) !== s.text && !goal.includes(s.text)) return null;
+  return s.text.slice(0, 2000);
+}
+
 /** TypeSafe-style decision API: operation + speculative per-operation target heads, one round trip. */
 async function decideSystemOne(snap, actions, goal, history, uf, cfg, signal) {
   const ep = choiceEndpoint(uf, cfg);
@@ -162,24 +171,36 @@ async function decideSystemOne(snap, actions, goal, history, uf, cfg, signal) {
     };
   }
   if (!ep.key) throw new Error('Add your decision API key in Settings → Ultrafast.');
-  const body = {
-    model: ep.model,
-    state: { page: { url: snap.url, title: snap.title, text: snap.text }, elements, recent_actions: recent(history) },
-    questions,
-  };
+  const state = { page: { url: snap.url, title: snap.title, text: snap.text }, elements, recent_actions: recent(history) };
+  const body = { model: ep.model, state, questions };
   const started = performance.now();
   const result = await postJson(ep.url, { authorization: `Bearer ${ep.key}` }, body, signal);
   const opAnswer = validateChoice(result.answers?.operation, operations);
   const operation = opAnswer.choice;
-  let target = null, confidence = opAnswer.confidence;
+  let target = null, confidence = opAnswer.confidence, text = null;
   if (targets[operation]) {
     // Unused target heads can never cause an action: only the selected operation's head is read.
     const t = validateChoice(result.answers?.[`${operation.toLowerCase()}_target`], targets[operation]);
     target = t.choice;
     confidence = Math.min(confidence ?? 1, t.confidence ?? 1);
   }
+  // Mercury Decide can extract the text to type straight from the goal (no text-helper call). The
+  // service rejects extract next to several questions, so it is a small follow-up request, sent only
+  // for TYPE_TEXT. source "goal" limits spans to the user's own goal: page text never chooses what is typed.
+  if (operation === 'TYPE_TEXT' && uf.backend === 'inception') {
+    const a = targets.TYPE_TEXT[target];
+    const out = await postJson(ep.url, { authorization: `Bearer ${ep.key}` }, {
+      model: ep.model, state: { goal },
+      questions: { value: {
+        type: 'extract', source: 'goal',
+        instructions: 'Extract the exact text the user wants typed into this field. Leave it empty when the goal does not give its value.',
+        criteria: { field: `Text to type into the ${a.role} "${a.label}"${a.ctx ? ` (in "${a.ctx}")` : ''}` },
+      } },
+    }, signal).catch((e) => { if (e.name === 'AbortError') throw e; return null; });
+    text = goalSpan(out?.answers?.value?.spans?.field, goal);
+  }
   return {
-    choice: resolve(operation, target, targets, controls), operation, target, confidence,
+    choice: resolve(operation, target, targets, controls), operation, target, confidence, text,
     operationProbabilities: opAnswer.probabilities, model: result.model || body.model,
     latencyMs: Math.round(performance.now() - started), usage: result.usage || {},
   };

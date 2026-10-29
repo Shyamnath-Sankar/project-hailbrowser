@@ -138,7 +138,8 @@ export function pageSnapshot(opts) {
 
   // Inner panels: items scrolled out of sight inside a panel are hidden even when they lie inside
   // the window, and are reported per panel (with which way to scroll) instead of as page content.
-  for (const f of offs) { if (checked.size >= 3000 || panels.size >= 3) break; noteScroller(f.e); }
+  // o.light (the pre-action freshness check) needs only URL, form values and element keys: skip the extras.
+  if (!o.light) for (const f of offs) { if (checked.size >= 3000 || panels.size >= 3) break; noteScroller(f.e); }
   const panelInfo = new Map([...panels].map((p) => [p, { r: p.getBoundingClientRect(), below: [], above: [] }]));
   const panelOf = (e) => { for (const [p, info] of panelInfo) if (p.contains(e)) return info; return null; };
   if (panelInfo.size) {
@@ -172,7 +173,7 @@ export function pageSnapshot(opts) {
     }
     return '';
   };
-  for (const el of elements) {
+  for (const el of o.light ? [] : elements) {
     const e = H.nodes.get(el.id);
     const ambiguous = counts.get(el.label) > 1 || el.label.length <= 3 || el.label === el.role;
     const group = ['checkbox', 'radio', 'switch'].includes(el.role)
@@ -185,7 +186,7 @@ export function pageSnapshot(opts) {
   const words = [], walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   const range = document.createRange();
   let node, length = 0;
-  while ((node = walker.nextNode()) && length < o.maxText) {
+  while (!o.light && (node = walker.nextNode()) && length < o.maxText) {
     const value = node.textContent.trim(), parent = node.parentElement;
     if (!value || !parent || parent.closest('script,style,noscript,template') || !visible(parent)) continue;
     range.selectNodeContents(node);
