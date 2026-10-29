@@ -60,7 +60,7 @@ page ──► indexed element table ──► ONE decision request ──► ex
           [3] checkbox "Nonstop"        target:    an index from the table
 ```
 
-The model never writes selectors, coordinates or code — it picks an **operation** and an **observed element index**. The executor re-checks that the page and target are unchanged before every input, and retries the decision (not the action) if they changed. It can open a site only when your goal names it (a URL, a domain, or a well-known name such as YouTube or Wikipedia) and can go back a page; started from a Chrome page such as a new tab, it opens that site or searches your goal first. A DONE claim gets a second yes/no check before the run reports success.
+The model never writes selectors, coordinates or code — it picks an **operation** and an **observed element index**. The executor re-checks that the page and target are unchanged before every input, and retries the decision (not the action) if they changed. It can open a site only when your goal names it (a URL, a domain, or a well-known name such as YouTube or Wikipedia) and can go back a page; started from a Chrome page such as a new tab, it opens that site or searches your goal first. A DONE claim gets a second yes/no check before the run reports success. Questions ("what does it cost?", "find out in which year…") end with an answer read from the final page, also returned by run_task; if the page doesn't say, it says so instead of guessing. With a chat model configured, Fast mode also writes a goal checklist and hands single hard steps to that model.
 
 Five decision backends:
 
@@ -159,7 +159,7 @@ npx puppeteer browsers install chrome     # once
 node scripts/e2e-browser.mjs              # real Chrome + extension + MCP server + scripted fake model
 node scripts/stress-browser.mjs           # ~2 min: 40-subtask task under injected model errors, worker killed mid-task,
                                           # deep research on broken pages, storage churn (fake model, no API calls)
-INCEPTION_API_KEY=sk_... node scripts/bench-fast.mjs   # Fast-mode benchmark: 21 hard-case fixture tasks, real model
+INCEPTION_API_KEY=sk_... node scripts/bench-fast.mjs   # Fast-mode benchmark: 26 fixture tasks (actions and questions), real model
                                           # (BENCH_MODE=normal compares Chat mode; BENCH_ONLY=enter,dup runs a subset)
 npm run sync-schemas                      # after editing extension/src/tools/schemas.js
 ```

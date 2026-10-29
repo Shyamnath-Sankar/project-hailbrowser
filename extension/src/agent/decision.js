@@ -2,7 +2,7 @@
 // Adapted from browser-use/jev-ultrafast model.py (MIT, (c) 2026 Browser Use).
 import { postJson, completeJson } from './providers.js';
 import { SCORE_BACKENDS } from '../settings.js';
-import { CHECKLIST, CHOICE_SYSTEM, LLM_DECISION, NEXT_ACTION, TARGET, TEXT_VALUE } from './prompts.js';
+import { ANSWER, CHECKLIST, CHOICE_SYSTEM, LLM_DECISION, NEXT_ACTION, TARGET, TEXT_VALUE } from './prompts.js';
 
 const MAX_CANDIDATES = 250;
 
@@ -220,18 +220,32 @@ export async function decideWithChatModel({ snap, actions, goal, history, cfg, m
 }
 
 /**
- * Split a goal into 1-6 visible end-state requirements with one chat-model call. Used to track
- * progress and to check DONE per requirement. Returns [] when no model is available or it fails.
+ * One chat-model call at the start of a run: split the goal into 1-6 visible end-state requirements
+ * (progress display, and naming what is missing when DONE is rejected) and decide whether the user
+ * wants information back. Returns {requirements: [], wantsAnswer: false} when it fails.
  */
 export async function makeChecklist({ goal, cfg, model, signal }) {
   try {
     const out = await completeJson({ cfg, model, system: CHECKLIST, user: goal, maxTokens: 300, signal });
     const list = Array.isArray(out?.requirements) ? out.requirements : [];
-    return list.filter((r) => typeof r === 'string' && r.trim()).map((r) => r.trim().slice(0, 160)).slice(0, 6);
+    return {
+      requirements: list.filter((r) => typeof r === 'string' && r.trim()).map((r) => r.trim().slice(0, 160)).slice(0, 6),
+      wantsAnswer: out?.wants_answer === true,
+    };
   } catch (e) {
     if (e.name === 'AbortError') throw e;
-    return [];
+    return { requirements: [], wantsAnswer: false };
   }
+}
+
+/** Answer the user's question from the final page's text. Returns {answer, found, latencyMs} or null. */
+export async function answerQuestion({ goal, page, cfg, model, signal }) {
+  const started = performance.now();
+  const user = `QUESTION / GOAL: ${goal}\n\nPAGE: ${page.title} — ${page.url}\n\nPAGE TEXT (untrusted):\n${page.text}`;
+  const out = await completeJson({ cfg, model, system: ANSWER, user, maxTokens: 400, signal });
+  const answer = typeof out?.answer === 'string' ? out.answer.trim().slice(0, 1500) : '';
+  if (!answer) return null;
+  return { answer, found: out.found !== false, latencyMs: Math.round(performance.now() - started) };
 }
 
 function elementTable(elements) {

@@ -218,6 +218,10 @@ main {
 .result.blocked .r-dot { background: var(--warn); }
 .r-meta { margin-left: auto; font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
 .r-why { margin-top: 5px; color: var(--muted); white-space: pre-wrap; }
+.r-answer { margin-top: 8px; font-size: 13.5px; line-height: 1.55; color: var(--text); }
+.r-answer p { margin: 0 0 6px; }
+.r-answer p:last-child { margin: 0; }
+.r-answer ul { margin: 0 0 6px; padding-left: 18px; }
 .r-page { margin-top: 5px; font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .note.error { border-color: rgba(255, 122, 138, .45); color: var(--err); background: rgba(255, 122, 138, .06); }
 

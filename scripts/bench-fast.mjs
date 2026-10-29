@@ -125,6 +125,18 @@ const TASKS = [
     html: page('modalform', 'Account', `<h1>Your addresses</h1><p>No saved addresses.</p><button id="add">Add address</button>
       <dialog id="d"><h2>New address</h2><label>City <input id="city"></label><br><label>Postcode <input id="pc"></label><br><button id="save">Save address</button> <button id="cancel">Cancel</button></dialog>`,
       `add.onclick=()=>d.showModal();cancel.onclick=()=>d.close();save.onclick=()=>{if(city.value.trim()&&pc.value.trim()){d.close();ok(city.value.trim()+'/'+pc.value.trim())}}`) },
+  // ---- questions: scored on the answer in run_task's output ----
+  { name: 'price-q', goal: 'What does the JBL Tune 510 cost?', answer: /3,?499/,
+    html: page('price-q', 'Headphones', `<h1>Headphones</h1>${PRODUCTS.map(([n, p]) => `<div class="card"><h3>${n}</h3><p>₹${p.toLocaleString('en-IN')}</p></div>`).join('')}`) },
+  { name: 'cheapest-q', goal: 'Which headphones on this page are the cheapest, and what do they cost?', answer: /boAt Rockerz 450[\s\S]*1,?299|1,?299[\s\S]*boAt Rockerz 450/i,
+    html: page('cheapest-q', 'Deals', `<h1>Deals</h1>${[...PRODUCTS].reverse().map(([n, p]) => `<div class="card"><h3>${n}</h3><p>₹${p.toLocaleString('en-IN')}</p></div>`).join('')}`) },
+  { name: 'footer-q', goal: 'What is the customer support phone number?', answer: /\+41 44 555 01 23/,
+    html: page('footer-q', 'Acme', `<h1>Acme Store</h1><div style="height:2600px">${'<p>Great products for everyone.</p>'.repeat(6)}</div><footer>Customer support: +41 44 555 01 23 (Mon–Fri)</footer>`) },
+  { name: 'count-q', goal: 'Search the shop for blue lamp and tell me how many results there are', expect: 'blue lamp', answer: /\b7\b|seven/i,
+    html: page('count-q', 'Lamp shop', `<h1>Lamp shop</h1><input id="q" aria-label="Search products"><div id="res"></div>`,
+      `q.addEventListener('keydown',(e)=>{if(e.key==='Enter'){const v=q.value.trim().toLowerCase();res.innerHTML='<h2>7 results for '+v+'</h2>'+'<p>Lamp</p>'.repeat(7);ok(v)}})`) },
+  { name: 'missing-q', goal: 'What is the warranty period of the Sony WH-1000XM5?', answer: (a) => /not|no |doesn't|does not|isn't/i.test(a) && !/\d+\s*-?\s*(year|month)/i.test(a),
+    html: page('missing-q', 'Sony WH-1000XM5', `<h1>Sony WH-1000XM5</h1><p>Industry-leading noise cancelling, 30-hour battery, ₹26,990.</p>`) },
 ];
 const EXTRA = { 'newtab-article': page('newtab', 'Help article', `<h1>Help article</h1><p>Follow these steps, then confirm.</p><button id="cf">Confirm</button>`, `cf.onclick=()=>ok('confirmed')`) };
 
@@ -142,6 +154,9 @@ await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const base = `http://127.0.0.1:${server.address().port}`;
 
 const passed = (task, got) => got != null && (task.expect instanceof RegExp ? task.expect.test(got) : got.toLowerCase() === task.expect.toLowerCase());
+// Question tasks are scored on the answer run_task returns (text after "Answer:").
+const answerOf = (text) => /\n\nAnswer:\n([\s\S]*?)(\n\nSteps:|$)/.exec(text)?.[1]?.trim() ?? null;
+const answered = (task, text) => { const a = answerOf(text); return a != null && (typeof task.answer === 'function' ? task.answer(a) : task.answer.test(a)); };
 
 // ---------- run ----------
 const browser = await puppeteer.launch({ headless: true, pipe: true, enableExtensions: [EXT], args: ['--no-first-run', '--no-default-browser-check', '--window-size=1280,900'] });
@@ -177,12 +192,12 @@ try {
     const secs = (Date.now() - t0) / 1000;
     await new Promise((res) => setTimeout(res, 300)); // let the page's success ping land
     const got = results.get(task.name);
-    const ok = passed(task, got);
+    const ok = (task.expect == null || passed(task, got)) && (!task.answer || answered(task, r.text));
     const actions = Number(/(\d+) actions/.exec(r.text)?.[1] ?? /(\d+) steps?/i.exec(r.text)?.[1] ?? NaN);
     const status = r.isError ? 'error' : /✅|Done/.test(r.text.split('\n')[0]) ? 'done' : /Blocked|⚠️/.test(r.text) ? 'blocked' : 'other';
     rows.push({ task: task.name, pass: ok, status, actions, secs, got: got ?? null, note: r.isError ? r.text.slice(0, 160) : '' });
     if (process.env.BENCH_VERBOSE) console.log(r.text);
-    console.log(`${ok ? '✅' : '❌'} ${task.name.padEnd(13)} ${status.padEnd(8)} ${String(actions).padStart(3)} actions ${secs.toFixed(1).padStart(6)}s  ${got == null ? '(page saw nothing)' : `page: ${got}`}${r.isError ? `  ${r.text.slice(0, 120)}` : ''}`);
+    console.log(`${ok ? '✅' : '❌'} ${task.name.padEnd(13)} ${status.padEnd(8)} ${String(actions).padStart(3)} actions ${secs.toFixed(1).padStart(6)}s  ${task.answer ? `answer: ${(answerOf(r.text) || '(none)').replace(/\s+/g, ' ').slice(0, 90)}` : got == null ? '(page saw nothing)' : `page: ${got}`}${r.isError ? `  ${r.text.slice(0, 120)}` : ''}`);
   }
 } finally {
   await client?.close().catch(() => {});

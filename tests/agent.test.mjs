@@ -343,10 +343,10 @@ test('perception: context, links, dialogs, panels and hover become model-visible
 test('phase 3: checklist, per-requirement misses, and chat-model escalation on the same action space', async () => {
   const { makeChecklist, verifyDone, decideWithChatModel } = await import('../extension/src/agent/decision.js');
   const chatCfg = { id: 'groq', api: 'openai', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'k' };
-  mockFetch(() => ({ choices: [{ message: { content: '{"requirements":["Results for headphones are shown","Sorted by price, low to high", 7]}' } }] }));
-  assert.deepEqual(await makeChecklist({ goal: 'search headphones, sort by price', cfg: chatCfg, model: 'm' }), ['Results for headphones are shown', 'Sorted by price, low to high']);
+  mockFetch(() => ({ choices: [{ message: { content: '{"requirements":["Results for headphones are shown","Sorted by price, low to high", 7],"wants_answer":false}' } }] }));
+  assert.deepEqual(await makeChecklist({ goal: 'search headphones, sort by price', cfg: chatCfg, model: 'm' }), { requirements: ['Results for headphones are shown', 'Sorted by price, low to high'], wantsAnswer: false });
   mockFetch(() => ({ choices: [{ message: { content: 'not json' } }] }));
-  assert.deepEqual(await makeChecklist({ goal: 'x', cfg: chatCfg, model: 'm' }), []);
+  assert.deepEqual(await makeChecklist({ goal: 'x', cfg: chatCfg, model: 'm' }), { requirements: [], wantsAnswer: false });
 
   // Whole-goal verdict decides; only a "no" asks per requirement, to name what is missing.
   const settings = structuredClone(DEFAULTS);
@@ -369,4 +369,18 @@ test('phase 3: checklist, per-requirement misses, and chat-model escalation on t
   assert.equal(actions.find((a) => a.id === d.choice).label, 'Search');
   mockFetch(() => ({ choices: [{ message: { content: '{"operation":"CLICK","target":"#search-btn"}' } }] }));
   await assert.rejects(decideWithChatModel({ snap, actions, goal: 'search', history: [], cfg: chatCfg, model: 'big' }), /not valid for CLICK/);
+});
+
+test('phase 4: questions get an answer read from the final page text', async () => {
+  const { answerQuestion, makeChecklist } = await import('../extension/src/agent/decision.js');
+  const cfg = { id: 'groq', api: 'openai', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'k' };
+  mockFetch(() => ({ choices: [{ message: { content: '{"requirements":["Price of JBL Tune 510 is visible"],"wants_answer":true}' } }] }));
+  assert.equal((await makeChecklist({ goal: 'What does the JBL Tune 510 cost?', cfg, model: 'm' })).wantsAnswer, true);
+  const calls = mockFetch(() => ({ choices: [{ message: { content: '{"answer":"The JBL Tune 510 costs ₹3,499.","found":true}' } }] }));
+  const out = await answerQuestion({ goal: 'What does the JBL Tune 510 cost?', page: { title: 'Shop', url: 'https://s.test', text: 'JBL Tune 510 ₹3,499' }, cfg, model: 'm' });
+  assert.equal(out.answer, 'The JBL Tune 510 costs ₹3,499.');
+  assert.equal(out.found, true);
+  assert.match(calls[0].body.messages[1].content, /JBL Tune 510 ₹3,499/);
+  mockFetch(() => ({ choices: [{ message: { content: '{"answer":"The page does not say.","found":false}' } }] }));
+  assert.equal((await answerQuestion({ goal: 'warranty?', page: { title: 'x', url: 'https://s.test', text: '' }, cfg, model: 'm' })).found, false);
 });

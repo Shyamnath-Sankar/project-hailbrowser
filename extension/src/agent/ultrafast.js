@@ -6,12 +6,16 @@ import * as inj from '../browser/inject.js';
 import * as page from '../browser/page.js';
 import { StaleError } from '../browser/page.js';
 import { providerConfig, SCORE_BACKENDS } from '../settings.js';
-import { buildActions, chooseValue, decide, decideWithChatModel, fieldContext, fieldText, makeChecklist, pageNotes, verifyDone } from './decision.js';
+import { answerQuestion, buildActions, chooseValue, decide, decideWithChatModel, fieldContext, fieldText, makeChecklist, pageNotes, verifyDone } from './decision.js';
 import { onSite, sitesFromGoal } from './sites.js';
 
 const OBSERVE = { viewportOnly: true, maxElements: 400, maxText: 6000 };
 const LOW_CONFIDENCE = 0.55; // below this the chat model takes the step
 const MAX_ESCALATIONS = 6;
+const ANSWER_TEXT = 12000; // characters of the final page given to the answer step
+// Goals that ask for information back, when no chat model is there to say so.
+// A false positive only costs one answer read: an answer that isn't found never causes extra actions.
+const QUESTION = /\?|^(what|which|who|whom|whose|when|where|why|how|is|are|does|do|did|can|list)\b|\b(tell me|find out|let me know|report back|in which|what (is|are|was|were)|how (many|much|long|old))\b/i;
 
 export function marker(snap) {
   return JSON.stringify([snap.url, snap.scroll.y, snap.viewport.w, snap.viewport.h, snap.title, snap.text,
@@ -101,12 +105,13 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
   try { chatCfg = uf.useChatModel === false ? null : providerConfig(settings, settings.normal.provider); } catch { /* no chat model set up */ }
   const chatModel = settings.normal.model;
   const canEscalate = !!chatCfg && uf.backend !== 'llm';
-  let escalations = 0, escalateNext = false, requirements = [];
+  let escalations = 0, escalateNext = false, requirements = [], wantsAnswer = QUESTION.test(task.trim());
   const checklist = chatCfg
     ? makeChecklist({ goal, cfg: chatCfg, model: chatModel, signal }).then((r) => {
-      requirements = r;
-      if (r.length) emit({ type: 'checklist', items: r });
-      return r;
+      requirements = r.requirements;
+      wantsAnswer ||= r.wantsAnswer;
+      if (requirements.length) emit({ type: 'checklist', items: requirements });
+      return requirements;
     })
     : Promise.resolve([]);
   // The checklist shows progress and names what is missing when DONE is rejected. It is not fed
@@ -121,13 +126,40 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
   let decisions = 0, stale = 0, pendingText = null, textCalls = 0;
   const t0 = performance.now();
   const elapsed = () => Math.round(performance.now() - t0);
-  const finish = (status, reason, snap) => {
+  // Questions ("what does X cost?", "which is cheapest?") end with an answer read from the final page.
+  const answerFor = async () => {
+    await checklist.catch(() => []);
+    if (!wantsAnswer) return null;
+    let cfg = chatCfg, model = chatModel;
+    if (!cfg) {
+      try { cfg = providerConfig(settings, uf.textProvider); model = uf.textModel; } catch {
+        try { if (uf.backend === 'inception') { cfg = providerConfig(settings, 'inception'); model = 'mercury-2'; } } catch { /* none */ }
+      }
+    }
+    if (!cfg) return null;
+    let pageNow;
+    try { pageNow = await page.run(tabId, inj.pageText, ANSWER_TEXT); } catch { return null; }
+    // Reading only (no browser action), so one retry on a malformed reply is safe.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const out = await answerQuestion({ goal, page: pageNow, cfg, model, signal });
+        if (out) { emit({ type: 'status', text: `Read the answer from the page (${out.latencyMs} ms).` }); return out; }
+      } catch (e) {
+        if (e.name === 'AbortError') throw e;
+      }
+    }
+    return null;
+  };
+  const finish = async (status, reason, snap, known) => {
+    // A stuck question still gets an answer: often "the page doesn't say", which is the honest result.
+    const answer = known !== undefined ? known : status !== 'stopped' ? await answerFor() : null;
     const summary = `${status === 'done' ? '✅ Done' : status === 'stopped' ? '⏹ Stopped' : '⚠️ Blocked'}` +
       ` in ${(elapsed() / 1000).toFixed(1)}s · ${history.length} actions · ${decisions} decisions · ${textCalls} text calls` +
       (escalations ? ` · ${escalations} chat-model step${escalations > 1 ? 's' : ''}` : '') +
-      (reason ? `\n${reason}` : '') + (snap ? `\nFinal page: ${snap.title} — ${snap.url}` : '');
-    emit({ type: 'finish', status, summary });
-    return { status, summary, history, elapsedMs: elapsed(), finalUrl: snap?.url, finalTitle: snap?.title };
+      (reason ? `\n${reason}` : '') + (snap ? `\nFinal page: ${snap.title} — ${snap.url}` : '') +
+      (answer ? `\n\nAnswer:\n${answer.answer}` : '');
+    emit({ type: 'finish', status, summary, answer: answer?.answer || null, answerFound: answer?.found ?? null });
+    return { status, summary, history, elapsedMs: elapsed(), finalUrl: snap?.url, finalTitle: snap?.title, answer: answer?.answer || null };
   };
 
   let snap = await page.observe(tabId, OBSERVE);
@@ -186,6 +218,26 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
           emit({ type: 'status', text: `Not finished yet: "${history[lastFill].action}" was typed but never submitted.` });
           checks.push({ action: `DONE was rejected: the text typed into "${history[lastFill].action}" was never submitted. CLICK its Search/Submit button or PRESS_ENTER in it.`, kind: 'check', text: null, page_changed: false });
           continue;
+        }
+      }
+      if (decision.choice === 'DONE') {
+        await checklist.catch(() => []);
+        if (wantsAnswer) {
+          // For a question, reading the answer is the check: no answer on this page means keep going (once).
+          const ans = await answerFor();
+          decisions++;
+          // Go on looking only if the goal itself is also unfinished: a finished action whose page just
+          // doesn't spell out the answer must not trigger more clicks (that can resubmit forms).
+          const unfinished = ans && !ans.found && rejectedDone < 1 &&
+            !(await verifyDone({ snap: view, goal, history: [...history, ...checks], settings, decisionCfg, signal }).catch(() => ({ done: false }))).done;
+          if (unfinished) {
+            rejectedDone++;
+            emit({ type: 'status', text: 'The answer is not on this page yet; looking further.' });
+            checks.push({ action: 'DONE was rejected: the information the goal asks for is not on this page yet. Search, open or scroll to where it is.', kind: 'check', text: null, page_changed: false });
+            escalateNext = true;
+            continue;
+          }
+          return finish(ans && !ans.found && rejectedDone ? 'blocked' : 'done', ans && !ans.found ? 'The page does not show what was asked.' : decision.reason, snap, ans);
         }
       }
       if (decision.choice === 'DONE') {

@@ -232,7 +232,9 @@ function step(container, icon, what, arg, meta, cls = '') {
 
 /** Result of a Fast run as a card: status, time, reason and final page instead of a raw summary. */
 function resultCard(e) {
-  const [head, ...rest] = String(e.summary).split('\n');
+  const [body, answerText] = String(e.summary).split('\n\nAnswer:\n');
+  const answer = e.answer ?? answerText ?? null;
+  const [head, ...rest] = body.split('\n');
   if (!/^(✅|⚠️|⏹)/.test(head)) return el('div', 'note', esc(e.summary));
   const final = rest.find((l) => l.startsWith('Final page:'));
   const why = rest.filter((l) => l !== final && l.trim());
@@ -240,6 +242,7 @@ function resultCard(e) {
   const status = e.status || (head.startsWith('✅') ? 'done' : head.startsWith('⏹') ? 'stopped' : 'blocked');
   const title = { done: 'Done', stopped: 'Stopped' }[status] || 'Stuck';
   return el('div', `note result ${status}`, `<div class="r-head"><span class="r-dot"></span><b>${title}</b>${m ? `<span class="r-meta">${m[1]} · ${m[2]} action${m[2] === '1' ? '' : 's'}</span>` : ''}</div>` +
+    (answer ? `<div class="r-answer">${markdown(answer)}</div>` : '') +
     (why.length ? `<div class="r-why">${esc(why.join('\n'))}</div>` : '') +
     (final ? `<div class="r-page">${esc(final.replace(/^Final page: /, ''))}</div>` : ''));
 }
