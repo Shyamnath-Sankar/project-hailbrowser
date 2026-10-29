@@ -30,17 +30,13 @@ let use = null; // composer toggle: 'research' | 'task' | null
 let researchDepth = settings.research?.depth || 'standard';
 const dismissedResume = new Set();
 
-const MODE_HELP = {
-  normal: 'Ask or give it a job. Turn on Research or Long task when you need them, or let it decide.',
-  ultrafast: 'Speed-runs forms and searches with a decision model.',
-};
 const PLACEHOLDER = {
-  normal: 'Ask or give a job…', ultrafast: 'What should it do on this page?',
+  normal: 'Ask anything, or tell it what to do…', ultrafast: 'What should it do? e.g. search YouTube for lo-fi music',
   research: 'What should I research?', task: 'Describe the long job…',
 };
 const SUGGESTIONS = {
   normal: ['Summarize this page in 5 bullet points', 'Research the company behind this site: what they do, their products and contact info', 'Remember that I prefer prices in EUR'],
-  ultrafast: ['Search this site for "wireless headphones" and sort by price', "Search Wikipedia for Gödel's incompleteness theorems and open the article"],
+  ultrafast: ['Open YouTube and search for lo-fi study music', "Search Wikipedia for Gödel's incompleteness theorems and open the article", 'On this page, search for wireless headphones and sort by price, lowest first'],
 };
 
 const chatView = el('section', 'view chat-view');
@@ -168,7 +164,7 @@ function hero(mode) {
   const titles = { normal: 'What should I do?', ultrafast: 'Fast mode' };
   const sub = {
     normal: 'I can read, click and type in this tab, research the web with cited sources, run long multi-step jobs, remember things about you, and schedule work. Try:',
-    ultrafast: 'Give one concrete goal with every value it needs. It acts on the current tab.',
+    ultrafast: 'One clear goal, done in seconds. It works on this tab and can open any site you name. Try:',
   };
   return card(`<div class="hero"><h2>${titles[mode]}</h2><p>${sub[mode]}</p>
     <div class="suggestions">${SUGGESTIONS[mode].map((s) => `<button data-act="suggest">${esc(s)}</button>`).join('')}</div></div>`);
@@ -200,11 +196,55 @@ function put(container, node) {
   return node;
 }
 
+// In the chat, consecutive steps fold into one line that shows the latest step ("Type into Search
+// ← "lamp" · 4 steps"); the full log opens on click. Answers and results stay in the main flow.
+function stepGroup() {
+  const last = chatView.lastElementChild;
+  if (last?.classList.contains('steps')) return last;
+  const g = el('details', 'steps');
+  g.innerHTML = '<summary><span class="s-ico" aria-hidden="true"></span><span class="s-now"></span><span class="s-count"></span></summary><div class="s-list"></div>';
+  return put(chatView, g);
+}
+
+function refreshGroup(g) {
+  if (!g) return;
+  const items = [...g.querySelector('.s-list').children];
+  const last = items[items.length - 1];
+  // The result card already says Done/Stuck: show the last real action instead.
+  const shown = [...items].reverse().find((i) => !i.classList.contains('final')) || last;
+  g.querySelector('.s-now').innerHTML = shown?.summaryHtml || '';
+  g.querySelector('.s-count').textContent = items.length > 1 ? `${items.length} steps` : '';
+  g.classList.toggle('live', !!last?.classList.contains('pending'));
+  g.classList.toggle('has-err', items.some((i) => i.classList.contains('err')));
+}
+
 function step(container, icon, what, arg, meta, cls = '') {
   const s = el('div', `step ${cls}`);
   s.innerHTML = `<span class="ico">${icon}</span><div class="body"><span class="what">${what}</span> <span class="arg">${arg || ''}</span></div><span class="meta">${meta || ''}</span>`;
-  return put(container, s);
+  s.summaryHtml = `${what} <span class="arg">${arg || ''}</span>`;
+  if (container !== chatView) return put(container, s);
+  const g = stepGroup();
+  g.querySelector('.s-list').appendChild(s);
+  refreshGroup(g);
+  scrollDown();
+  return s;
 }
+
+/** Result of a Fast run as a card: status, time, reason and final page instead of a raw summary. */
+function resultCard(e) {
+  const [head, ...rest] = String(e.summary).split('\n');
+  if (!/^(✅|⚠️|⏹)/.test(head)) return el('div', 'note', esc(e.summary));
+  const final = rest.find((l) => l.startsWith('Final page:'));
+  const why = rest.filter((l) => l !== final && l.trim());
+  const m = /in ([\d.]+s) · (\d+) actions/.exec(head);
+  const status = e.status || (head.startsWith('✅') ? 'done' : head.startsWith('⏹') ? 'stopped' : 'blocked');
+  const title = { done: 'Done', stopped: 'Stopped' }[status] || 'Stuck';
+  return el('div', `note result ${status}`, `<div class="r-head"><span class="r-dot"></span><b>${title}</b>${m ? `<span class="r-meta">${m[1]} · ${m[2]} action${m[2] === '1' ? '' : 's'}</span>` : ''}</div>` +
+    (why.length ? `<div class="r-why">${esc(why.join('\n'))}</div>` : '') +
+    (final ? `<div class="r-page">${esc(final.replace(/^Final page: /, ''))}</div>` : ''));
+}
+
+const OP_WORD = { CLICK: 'Click', TYPE_TEXT: 'Type into', SELECT: 'Choose', PRESS_ENTER: 'Press Enter in', HOVER: 'Hover', DONE: 'Done', BLOCKED: 'Stuck' };
 
 function argSummary(args) {
   if (!args) return '';
@@ -265,6 +305,7 @@ function renderEvent(e, source, container = chatView) {
       if (e.isError) s.classList.add('err');
       s.querySelector('.ico').textContent = e.isError ? '✕' : '✓';
       s.querySelector('.meta').textContent = ms(e.latencyMs);
+      refreshGroup(s.closest('.steps'));
       if (e.text || e.image) {
         const d = el('details');
         d.innerHTML = `<summary>${e.isError ? 'error' : 'result'}</summary>${e.text ? `<pre>${esc(e.text)}</pre>` : ''}`;
@@ -279,14 +320,36 @@ function renderEvent(e, source, container = chatView) {
     case 'decision': {
       const conf = e.confidence != null ? ` · ${Math.round(e.confidence * 100)}%` : '';
       const cls = e.operation === 'DONE' ? 'done' : e.operation === 'BLOCKED' ? 'blocked' : '';
-      lastDecision = step(container, '⚡', `<span class="badge ${cls}">${esc(e.operation)}</span>`,
-        esc(e.label) + (e.text ? esc(` ← "${e.text}"`) : '') + (e.reason ? ` — ${esc(e.reason)}` : ''), `${ms(e.latencyMs)}${conf}`);
+      const word = OP_WORD[e.operation];
+      const label = ['DONE', 'BLOCKED'].includes(e.operation) ? '' : e.label;
+      const by = e.escalated ? `<span class="badge ext" title="Decided by ${esc(e.model || 'your chat model')}">🧠</span>` : '';
+      lastDecision = step(container, e.escalated ? '🧠' : '⚡', by + (word ? `<span class="badge ${cls}">${esc(word)}</span>` : ''),
+        esc(label) + (e.text ? esc(` ← "${e.text}"`) : '') + (e.reason ? ` — ${esc(e.reason)}` : ''), `${ms(e.latencyMs)}${conf}`, cls ? 'final' : '');
+      refreshGroup(lastDecision.closest('.steps'));
       break;
     }
-    case 'text': step(container, '✎', 'text', esc(`"${e.text}"`), ms(e.latencyMs), 'muted'); break;
+    case 'text': {
+      // The value typed belongs to the decision just shown.
+      const arg = lastDecision?.querySelector('.arg');
+      if (!arg) { step(container, '✎', 'text', esc(`"${e.text}"`), ms(e.latencyMs), 'muted'); break; }
+      arg.textContent += ` ← "${e.text}"`;
+      lastDecision.summaryHtml = `${lastDecision.querySelector('.what').innerHTML} <span class="arg">${esc(arg.textContent)}</span>`;
+      refreshGroup(lastDecision.closest('.steps'));
+      break;
+    }
     case 'action': if (lastDecision) lastDecision.querySelector('.meta').textContent += ` · ${ms(e.elapsedMs)}${e.page_changed ? '' : ' · no change'}`; break;
     case 'stale': step(container, '↻', 'page changed', 're-checking', '', 'muted'); break;
-    case 'finish': if (e.summary) put(container, el('div', 'note', esc(e.summary))); break;
+    case 'checklist': {
+      // One checklist per run: the first event draws it, the DONE check ticks it.
+      const last = [...container.querySelectorAll(':scope > .checklist')].pop();
+      const node = e.met && last ? last : put(container, el('div', 'checklist'));
+      node.innerHTML = `<div class="c-head">Goal checklist</div><ul>${e.items.map((it, i) => {
+        const state = e.met ? (e.met[i] ? 'met' : 'open') : '';
+        return `<li class="${state}"><span class="c-box" aria-hidden="true"></span>${esc(it)}</li>`;
+      }).join('')}</ul>`;
+      break;
+    }
+    case 'finish': if (e.summary) put(container, resultCard(e)); break;
     case 'error': put(container, el('div', 'note error', esc(e.text))); break;
     case 'proposal': put(container, proposalCard(e)); break;
     case 'memory_saved': step(container, '🧠', 'remembered', esc(e.fact) + (e.site ? ` <span class="chip">${esc(e.site)}</span>` : ''), ''); break;
@@ -667,7 +730,7 @@ function renderControlled(tabs = []) {
   $('#control-label').textContent = busy ? `${tabs.find((t) => t.busy).who} is working` : `Controlling ${tabs.length} tab${tabs.length > 1 ? 's' : ''}`;
   const list = $('#control-tabs');
   list.innerHTML = '';
-  for (const t of tabs.slice(0, 4)) {
+  for (const t of tabs.slice(0, 2)) {
     const where = t.windowId === myWindow ? 'this window' : t.windows > 1 ? `window ${t.window}` : '';
     const li = el('li', t.busy ? 'busy' : '');
     li.innerHTML = `<button class="tab-row" title="Show this tab">
@@ -684,7 +747,7 @@ function renderControlled(tabs = []) {
     li.querySelector('.t-x').onclick = () => send({ type: 'release', tabId: t.id });
     list.appendChild(li);
   }
-  if (tabs.length > 4) list.appendChild(el('li', 'more', `+${tabs.length - 4} more`));
+  if (tabs.length > 2) list.appendChild(el('li', 'more', `+${tabs.length - 2} more`));
 }
 $('#release-all').onclick = () => send({ type: 'release' });
 
@@ -726,11 +789,20 @@ function autosize() {
 function setUse(next) {
   use = next;
   for (const b of document.querySelectorAll('[data-use]')) b.setAttribute('aria-pressed', String(b.dataset.use === use));
+  // One picker: Chat and Fast are modes, Research and Task are one-shot jobs on top of Chat.
+  for (const b of document.querySelectorAll('[data-mode]')) b.setAttribute('aria-selected', String(!use && b.dataset.mode === settings.mode));
   $('#depth').hidden = use !== 'research';
   for (const b of document.querySelectorAll('#depth button')) b.setAttribute('aria-checked', String(b.dataset.depth === researchDepth));
   input.placeholder = PLACEHOLDER[use || settings.mode] || '';
 }
-for (const b of document.querySelectorAll('[data-use]')) b.addEventListener('click', () => { setUse(use === b.dataset.use ? null : b.dataset.use); input.focus(); });
+for (const b of document.querySelectorAll('[data-use]')) {
+  b.addEventListener('click', async () => {
+    if (use === b.dataset.use) { setUse(null); return input.focus(); }
+    if (settings.mode !== 'normal') await setMode('normal'); // Research and Task run on the chat model
+    setUse(b.dataset.use);
+    input.focus();
+  });
+}
 for (const b of document.querySelectorAll('#depth button')) b.addEventListener('click', () => { researchDepth = b.dataset.depth; setUse(use); });
 
 input.addEventListener('input', autosize);
@@ -747,7 +819,7 @@ async function setMode(mode) {
   await saveSettings(settings);
   renderAll();
 }
-for (const b of document.querySelectorAll('.modes button')) b.addEventListener('click', () => setMode(b.dataset.mode));
+for (const b of document.querySelectorAll('[data-mode]')) b.addEventListener('click', () => { use = null; setMode(b.dataset.mode); input.focus(); });
 
 function caption() {
   const uf = settings.ultrafast;
@@ -759,9 +831,6 @@ function caption() {
 }
 
 function renderAll() {
-  const mode = settings.mode;
-  for (const b of document.querySelectorAll('.modes button')) b.setAttribute('aria-selected', String(b.dataset.mode === mode));
-  $('#mode-help').textContent = MODE_HELP[mode] || '';
   $('#model-caption').textContent = caption();
   renderChatIntro();
   setUse(use);

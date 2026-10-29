@@ -103,6 +103,28 @@ const TASKS = [
       <div id="p1">Industry-leading noise cancelling.</div><div id="p2" hidden>30h battery.</div><div id="p3" hidden>${['Asha', 'Ravi', 'Meera'].map((n) => `<div class="card"><b>${n}</b>: Great sound. <button data-n="${n}">Helpful</button></div>`).join('')}</div>`,
       `const tabs=[t1,t2,t3],ps=[p1,p2,p3];tabs.forEach((t,i)=>t.onclick=()=>{tabs.forEach((x,j)=>x.setAttribute('aria-selected',String(i===j)));ps.forEach((p,j)=>p.hidden=i!==j)});
        document.querySelectorAll('[data-n]').forEach((b)=>b.onclick=()=>ok(b.dataset.n))`) },
+  // ---- harder: reasoning over the page, several requirements, forms inside dialogs ----
+  { name: 'cheapest', goal: 'Add the cheapest headphones to the cart', expect: 'boAt Rockerz 450',
+    html: page('cheapest', 'Deals', `<h1>Headphone deals</h1>${[...PRODUCTS].sort(() => 0.5 - Math.sin(PRODUCTS.length)).map(([n, p]) => `<div class="card"><h3>${n}</h3><p>₹${p.toLocaleString('en-IN')}</p><button>Add to cart</button></div>`).join('')}`,
+      `document.querySelectorAll('.card button').forEach((b)=>b.onclick=()=>ok(b.parentElement.querySelector('h3').textContent))`) },
+  { name: 'trip', goal: 'Find trains from Zurich to Paris for 2 travellers', expect: 'Zurich (ZRH)>Paris (PAR)/2',
+    html: page('trip', 'Rail', `<h1>Rail search</h1>
+      <label>From <input id="from" role="combobox" autocomplete="off"></label><ul id="s1" role="listbox"></ul>
+      <label>To <input id="to" role="combobox" autocomplete="off"></label><ul id="s2" role="listbox"></ul>
+      <label>Travellers <select id="pax"><option>1</option><option>2</option><option>3</option><option>4</option></select></label> <button id="go">Find trains</button>`,
+      `const C=['Zurich (ZRH)','Paris (PAR)','Prague (PRG)','Zagreb (ZAG)','Porto (OPO)'];
+       const ac=(inp,ul)=>{inp.oninput=()=>{const v=inp.value.toLowerCase();ul.innerHTML='';if(!v)return;C.filter((c)=>c.toLowerCase().startsWith(v.slice(0,2))).forEach((c)=>{const li=document.createElement('li');li.setAttribute('role','option');li.textContent=c;li.onclick=()=>{inp.value=c;ul.innerHTML=''};ul.append(li)})}};
+       ac(from,s1);ac(to,s2);go.onclick=()=>{if(C.includes(from.value)&&C.includes(to.value))ok(from.value+'>'+to.value+'/'+pax.value)}`) },
+  { name: 'multi', goal: 'Search for headphones, sort by price from low to high and show only items in stock', expect: 'headphones/asc/instock',
+    html: page('multi', 'Store', `<h1>Store</h1><input id="q" aria-label="Search"> <button id="go">Search</button>
+      <label>Sort by <select id="s"><option value="rel">Relevance</option><option value="asc">Price: low to high</option><option value="desc">Price: high to low</option></select></label>
+      <label><input type="checkbox" id="st"> In stock only</label><div id="res"></div>`,
+      `let searched='';const rep=()=>{if(searched&&s.value==='asc'&&st.checked)ok(searched+'/asc/instock')};
+       go.onclick=()=>{searched=q.value.trim().toLowerCase();res.textContent='24 results for '+searched;rep()};s.onchange=rep;st.onchange=rep`) },
+  { name: 'modalform', goal: 'Add a new delivery address in Berlin with postcode 10115', expect: 'Berlin/10115',
+    html: page('modalform', 'Account', `<h1>Your addresses</h1><p>No saved addresses.</p><button id="add">Add address</button>
+      <dialog id="d"><h2>New address</h2><label>City <input id="city"></label><br><label>Postcode <input id="pc"></label><br><button id="save">Save address</button> <button id="cancel">Cancel</button></dialog>`,
+      `add.onclick=()=>d.showModal();cancel.onclick=()=>d.close();save.onclick=()=>{if(city.value.trim()&&pc.value.trim()){d.close();ok(city.value.trim()+'/'+pc.value.trim())}}`) },
 ];
 const EXTRA = { 'newtab-article': page('newtab', 'Help article', `<h1>Help article</h1><p>Follow these steps, then confirm.</p><button id="cf">Confirm</button>`, `cf.onclick=()=>ok('confirmed')`) };
 
@@ -129,14 +151,14 @@ try {
   const swTarget = await browser.waitForTarget((t) => t.type() === 'service_worker' && t.url().endsWith('src/background.js'), { timeout: 15000 });
   const sw = await swTarget.worker();
   for (let i = 0; i < 50 && !(await sw.evaluate(() => !!globalThis.chrome?.storage?.local)); i++) await new Promise((r) => setTimeout(r, 100));
-  await sw.evaluate(async (port, key, model, backend, chatModel) => {
+  await sw.evaluate(async (port, key, model, backend, chatModel, noChat) => {
     const { settings = {} } = await chrome.storage.local.get('settings');
     settings.bridge = { enabled: true, port };
     settings.providers = { [backend]: { apiKey: key, baseUrl: '' } };
     settings.normal = { provider: backend, model: chatModel, vision: false, maxSteps: 25 };
-    settings.ultrafast = { backend, [`${backend}Model`]: model, textProvider: backend, textModel: chatModel, maxActions: 15 };
+    settings.ultrafast = { backend, [`${backend}Model`]: model, textProvider: backend, textModel: chatModel, maxActions: 15, useChatModel: !noChat };
     await chrome.storage.local.set({ settings });
-  }, BRIDGE_PORT, KEY, MODEL, BACKEND, CHAT_MODEL);
+  }, BRIDGE_PORT, KEY, MODEL, BACKEND, CHAT_MODEL, !!process.env.BENCH_NO_CHAT);
 
   client = new Client({ name: 'bench', version: '1.0.0' });
   await client.connect(new StdioClientTransport({ command: process.execPath, env: { ...process.env, HAILBROWSER_TRUST_FILE: TRUST_FILE }, args: ['mcp-server/src/index.js', '--port', String(BRIDGE_PORT)], stderr: 'ignore' }));

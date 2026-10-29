@@ -48,26 +48,22 @@
     <button class="t-x" data-r="dismiss" title="Hide" aria-label="Hide"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
   </section>
 
-  <nav class="modes" role="tablist" aria-label="Mode">
-    <button role="tab" data-mode="normal" aria-selected="true">
-      <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Chat
-    </button>
-    <button role="tab" data-mode="ultrafast" aria-selected="false">
-      <svg viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>Fast
-    </button>
-</nav>
-  <p id="mode-help" class="mode-help"></p>
-
   <main id="feed" aria-live="polite"></main>
 
   <footer class="composer" id="composer">
     <div class="composer-box">
       <textarea id="input" rows="1" placeholder="Ask or give a job…" title="Enter to send · Shift+Enter for a new line"></textarea>
       <div class="composer-row">
-        <button type="button" class="use" data-use="research" aria-pressed="false" title="Search the web, read several sources and write a cited report">
-          <svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.8-4.8"/></svg>Research</button>
-        <button type="button" class="use" data-use="task" aria-pressed="false" title="Plan a long job into subtasks and work through them (pause and resume anytime)">
-          <svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/></svg>Long task</button>
+        <div class="picker" role="group" aria-label="How to run it">
+          <button type="button" data-mode="normal" aria-selected="true" title="Chat: reads, clicks and types for you, and answers questions">
+            <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Chat</button>
+          <button type="button" data-mode="ultrafast" aria-selected="false" title="Fast: speed-runs forms and searches with a decision model">
+            <svg viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>Fast</button>
+          <button type="button" data-use="research" aria-pressed="false" title="Research: searches the web, reads several sources and writes a cited report">
+            <svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m20 20-4.8-4.8"/></svg>Research</button>
+          <button type="button" data-use="task" aria-pressed="false" title="Long task: plans a big job into subtasks and works through them (pause and resume anytime)">
+            <svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/></svg>Task</button>
+        </div>
         <div id="depth" class="depth" role="radiogroup" aria-label="Research depth" hidden>
           <button type="button" data-depth="quick" title="1 round, ~4 sources">Quick</button>
           <button type="button" data-depth="standard" title="2 rounds, ~6 sources">Std</button>
@@ -170,8 +166,8 @@
     </header>
     <form id="settings-form" autocomplete="off">
       <div class="card"><div class="card-in">
-        <h3>Your model</h3>
-        <p class="hint">Used by Chat and Tasks. Paste a key from your provider; it stays in this browser.</p>
+        <h3>Chat model</h3>
+        <p class="hint">Used by Chat, Research and Long tasks. Your key stays in this browser.</p>
         <label>Provider <select name="normal.provider" data-providers></select></label>
         <label data-key-for="normal.provider">API key <input type="password" data-key-input="normal.provider" spellcheck="false" placeholder="Paste your API key" /></label>
           <label data-url-for="normal.provider" hidden>Base URL <input data-url-input="normal.provider" spellcheck="false" placeholder="https://your-endpoint/v1" /></label>
@@ -180,15 +176,15 @@
       </div></div>
 
       <div class="card"><div class="card-in">
-        <h3>⚡ Fast mode</h3>
-        <p class="hint">A decision model picks one action at a time from a numbered list of what's on the page. Best for forms and searches.</p>
-        <label>Decision model type
+        <h3>Fast mode model</h3>
+        <p class="hint">A small decision model picks each click or keystroke from a numbered list of what's on the page.</p>
+        <label>Decision model
           <select name="ultrafast.backend">
-            <option value="systemone">Decision API (TypeSafe Jev or compatible)</option>
-            <option value="openrouter">OpenRouter decision model (e.g. Respan span-01-lite)</option>
-            <option value="inception">Inception decision model (Mercury, direct API)</option>
+            <option value="inception">Mercury Decide · Inception (recommended)</option>
+            <option value="openrouter">OpenRouter decision models</option>
+            <option value="systemone">TypeSafe Jev (or compatible)</option>
             <option value="choice">Letter-choice model (e.g. Together Tev1)</option>
-            <option value="llm">Any chat model (one JSON reply per step)</option>
+            <option value="llm">Any chat model (slower)</option>
           </select>
         </label>
         <div data-show="ultrafast.backend=systemone">
@@ -219,6 +215,7 @@
           <label data-url-for="ultrafast.decisionProvider" hidden>Base URL <input data-url-input="ultrafast.decisionProvider" spellcheck="false" placeholder="https://your-endpoint/v1" /></label>
           <label>Model <input name="ultrafast.decisionModel" list="models-ultrafast.decisionProvider" spellcheck="false" /></label>
         </div>
+        <label class="check"><input type="checkbox" name="ultrafast.useChatModel" /> Let my chat model plan a checklist and take over hard steps</label>
         <details><summary>Text helper (writes what to type)</summary>
           <p class="hint">Not needed when an agent passes values to run_task.</p>
           <label>Provider <select name="ultrafast.textProvider" data-providers></select></label>
@@ -228,8 +225,7 @@
         </details>
       </div></div>
 
-      <div class="card"><div class="card-in">
-        <h3>Memory</h3>
+      <details class="card fold"><summary>Memory</summary><div class="card-in">
         <p class="hint">Facts HailBrowser knows about you, used in chats, tasks and scheduled jobs (never shared with coding agents). Say "remember…" in chat, or add one here.</p>
         <label class="check"><input type="checkbox" name="memory.enabled" /> Use memory</label>
         <ul id="memory-list" class="mem-list"></ul>
@@ -238,10 +234,9 @@
           <input id="memory-site" placeholder="Only on site (optional), e.g. github.com" spellcheck="false" />
           <div class="row end"><button type="button" class="btn ghost danger small" id="memory-clear">Forget all</button><button type="button" class="btn small" id="memory-add">Add</button></div>
         </div>
-      </div></div>
+      </div></details>
 
-      <div class="card"><div class="card-in">
-        <h3>Research</h3>
+      <details class="card fold"><summary>Research</summary><div class="card-in">
         <p class="hint">Searches in a background tab of this browser, reads the best sources and writes a report with citations.</p>
         <label>Search engine
           <select name="research.engine">
@@ -250,18 +245,16 @@
         <label data-show="research.engine=custom">Search URL (%s = query) <input name="research.customUrl" placeholder="https://search.example.com/?q=%s" spellcheck="false" /></label>
         <label>Default depth
           <select name="research.depth"><option value="quick">Quick (~4 sources)</option><option value="standard">Standard (~6 sources)</option><option value="deep">Deep (~10 sources)</option></select></label>
-      </div></div>
+      </div></details>
 
-      <div class="card"><div class="card-in">
-        <h3>Tasks &amp; schedules</h3>
+      <details class="card fold"><summary>Tasks &amp; schedules</summary><div class="card-in">
         <p class="hint">Long jobs are split into subtasks. These limits keep a runaway task in check.</p>
         <label>Steps per subtask <input type="number" name="tasks.stepsPerSubtask" min="5" max="200" /></label>
         <label>Total steps before asking you <input type="number" name="tasks.maxTotalSteps" min="20" max="5000" /></label>
         <label class="check"><input type="checkbox" name="notifications" /> Notify me when scheduled jobs finish or a task needs me</label>
-      </div></div>
+      </div></details>
 
-      <div class="card"><div class="card-in">
-        <h3>Connect Claude Code, OpenCode &amp; more</h3>
+      <details class="card fold"><summary>Coding agents (Claude Code, OpenCode…)</summary><div class="card-in">
         <label class="check"><input type="checkbox" name="bridge.enabled" /> Let coding agents use this browser</label>
         <p class="hint">Add HailBrowser to your agent with one of these, then ask it to use the browser.</p>
         <div class="snippet"><span>Claude Code</span><code id="snip-claude"></code><button type="button" data-copy="snip-claude">Copy</button></div>
@@ -270,15 +263,14 @@
           <div class="snippet"><span>Cursor / Windsurf / any MCP client</span><code id="snip-generic"></code><button type="button" data-copy="snip-generic">Copy</button></div>
           <label>Port <input type="number" name="bridge.port" min="1024" max="65535" /></label>
         </details>
-      </div></div>
+      </div></details>
 
-      <div class="card"><div class="card-in">
-        <h3>Safety</h3>
+      <details class="card fold"><summary>Safety &amp; all API keys</summary><div class="card-in">
         <label class="check"><input type="checkbox" name="tools.groupTabs" /> Put controlled tabs in a "HailBrowser" tab group</label>
         <label class="check"><input type="checkbox" name="tools.showIndicator" /> Glow on tabs being controlled</label>
         <label class="check"><input type="checkbox" name="tools.allowJavascript" /> Allow running page scripts (javascript tool)</label>
         <details><summary>All API keys</summary><div id="keys"></div></details>
-      </div></div>
+      </div></details>
     </form>
   </section>
 

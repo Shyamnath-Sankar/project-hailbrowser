@@ -6,10 +6,12 @@ import * as inj from '../browser/inject.js';
 import * as page from '../browser/page.js';
 import { StaleError } from '../browser/page.js';
 import { providerConfig, SCORE_BACKENDS } from '../settings.js';
-import { buildActions, chooseValue, decide, fieldContext, fieldText, pageNotes, verifyDone } from './decision.js';
+import { buildActions, chooseValue, decide, decideWithChatModel, fieldContext, fieldText, makeChecklist, pageNotes, verifyDone } from './decision.js';
 import { onSite, sitesFromGoal } from './sites.js';
 
 const OBSERVE = { viewportOnly: true, maxElements: 400, maxText: 6000 };
+const LOW_CONFIDENCE = 0.55; // below this the chat model takes the step
+const MAX_ESCALATIONS = 6;
 
 export function marker(snap) {
   return JSON.stringify([snap.url, snap.scroll.y, snap.viewport.w, snap.viewport.h, snap.title, snap.text,
@@ -93,6 +95,23 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
     : uf.backend === 'choice' ? providerConfig(settings, uf.choiceProvider)
       : uf.backend === 'openrouter' || uf.backend === 'inception' ? providerConfig(settings, uf.backend) : null;
   let textCfg = null, textModel = uf.textModel;
+  // The user's chat model, when configured: writes a goal checklist (in parallel with the first
+  // decisions, so it adds no wait) and takes over single hard steps (escalation).
+  let chatCfg = null;
+  try { chatCfg = uf.useChatModel === false ? null : providerConfig(settings, settings.normal.provider); } catch { /* no chat model set up */ }
+  const chatModel = settings.normal.model;
+  const canEscalate = !!chatCfg && uf.backend !== 'llm';
+  let escalations = 0, escalateNext = false, requirements = [];
+  const checklist = chatCfg
+    ? makeChecklist({ goal, cfg: chatCfg, model: chatModel, signal }).then((r) => {
+      requirements = r;
+      if (r.length) emit({ type: 'checklist', items: r });
+      return r;
+    })
+    : Promise.resolve([]);
+  // The checklist shows progress and names what is missing when DONE is rejected. It is not fed
+  // into decisions: model-written requirements can go beyond the goal and cause extra actions.
+  checklist.catch(() => {});
   const history = [];
   // Sites the goal names; offered as Open controls when the page is elsewhere.
   const sites = sitesFromGoal(task);
@@ -105,6 +124,7 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
   const finish = (status, reason, snap) => {
     const summary = `${status === 'done' ? '✅ Done' : status === 'stopped' ? '⏹ Stopped' : '⚠️ Blocked'}` +
       ` in ${(elapsed() / 1000).toFixed(1)}s · ${history.length} actions · ${decisions} decisions · ${textCalls} text calls` +
+      (escalations ? ` · ${escalations} chat-model step${escalations > 1 ? 's' : ''}` : '') +
       (reason ? `\n${reason}` : '') + (snap ? `\nFinal page: ${snap.title} — ${snap.url}` : '');
     emit({ type: 'finish', status, summary });
     return { status, summary, history, elapsedMs: elapsed(), finalUrl: snap?.url, finalTitle: snap?.title };
@@ -127,12 +147,32 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
     // and a note when the candidate list was cut, so the model scrolls instead of giving up.
     const notes = [omitted ? `[${omitted} more on-screen actions were not listed. Scroll to bring other parts of the page into view.]` : '', pageNotes(snap)].filter(Boolean).join('\n');
     const view = notes ? { ...snap, text: `${notes}\n${snap.text}` } : snap;
-    const decision = await decide({ snap: view, actions, goal, history: [...history, ...checks], settings, decisionCfg, signal });
+    const decisionGoal = goal;
+    const seen = [...history, ...checks];
+    let decision = await decide({ snap: view, actions, goal: decisionGoal, history: seen, settings, decisionCfg, signal });
     decisions++;
+    // Escalate one step to the chat model when the fast model is unsure, about to give up, or stuck.
+    const stuck = history.length >= 2 && history.slice(-2).every((h) => h.page_changed === false && h.kind !== 'wait');
+    const why = decision.choice === 'BLOCKED' ? 'it was about to give up'
+      : decision.confidence != null && decision.confidence < LOW_CONFIDENCE ? 'it was unsure'
+        : stuck ? 'the last steps changed nothing' : escalateNext ? 'the last step needed help' : null;
+    if (canEscalate && why && escalations < MAX_ESCALATIONS) {
+      escalateNext = false;
+      try {
+        decision = await decideWithChatModel({ snap: view, actions, goal: decisionGoal, history: seen, cfg: chatCfg, model: chatModel, signal });
+        escalations++;
+        decisions++;
+        emit({ type: 'status', text: `Asked ${chatModel} for this step (${why}).` });
+      } catch (e) {
+        if (e.name === 'AbortError') throw e;
+        emit({ type: 'status', text: `The chat model could not help with this step: ${e.message.slice(0, 120)}` });
+      }
+    }
     const action = actions.find((a) => a.id === decision.choice);
     emit({
       type: 'decision', operation: decision.operation, target: decision.target, label: action?.label || decision.choice,
       confidence: decision.confidence, latencyMs: decision.latencyMs, reason: decision.reason, text: decision.text, elapsedMs: elapsed(),
+      escalated: !!decision.escalated, model: decision.escalated ? chatModel : undefined,
     });
 
     if (decision.choice === 'DONE' || decision.choice === 'BLOCKED') {
@@ -150,12 +190,17 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
       }
       if (decision.choice === 'DONE') {
         // DONE is a claim: ask once more whether every part of the goal is visibly met.
-        const check = await verifyDone({ snap: view, goal, history: [...history, ...checks], settings, decisionCfg, signal });
+        // With a checklist, each requirement is checked on its own and the misses are named.
+        await checklist.catch(() => []);
+        const check = await verifyDone({ snap: view, goal, history: [...history, ...checks], settings, decisionCfg, signal, requirements });
         decisions++;
+        if (requirements.length && (check.met || check.done)) emit({ type: 'checklist', items: requirements, met: check.met || requirements.map(() => true) });
         if (!check.done) {
-          emit({ type: 'status', text: 'Not finished yet: a check found part of the goal still open.' });
-          if (++rejectedDone >= 2) return finish('blocked', 'The model said DONE twice, but a check found part of the goal is still not met on this page.', snap);
-          checks.push({ action: 'DONE was rejected: part of the goal is not met yet. Choose the operation that completes it.', kind: 'check', text: null, page_changed: false });
+          const missing = check.unmet?.length ? check.unmet.join('; ') : 'part of the goal';
+          emit({ type: 'status', text: `Not finished yet: ${missing}.` });
+          if (++rejectedDone >= 2) return finish('blocked', `The model said DONE twice, but this is still not met: ${missing}.`, snap);
+          checks.push({ action: `DONE was rejected. Still not met: ${missing}. Choose the operation that completes it.`, kind: 'check', text: null, page_changed: false });
+          escalateNext = true;
           continue;
         }
       }
@@ -192,7 +237,20 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
               }
             }
           }
-          const helper = await fieldText(context, textCfg, textModel, signal);
+          let helper;
+          try {
+            helper = await fieldText(context, textCfg, textModel, signal);
+          } catch (e) {
+            if (e.name === 'AbortError') throw e;
+            textCalls++;
+            // The helper could not work out the value: let the chat model take this step (it writes the
+            // text itself), or stop with the reason instead of failing the whole run.
+            if (!canEscalate || escalations >= MAX_ESCALATIONS) return finish('blocked', `Could not work out what to type into "${action.label}": ${e.message}`, snap);
+            emit({ type: 'status', text: `The text helper had no value for "${action.label}"; handing this step to the chat model.` });
+            checks.push({ action: `Could not work out what to type into "${action.label}". Decide again; for TYPE_TEXT include the exact text.`, kind: 'check', text: null, page_changed: false });
+            escalateNext = true;
+            continue;
+          }
           textCalls++;
           text = helper.text;
           pendingText = { key, text };

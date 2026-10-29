@@ -339,3 +339,34 @@ test('perception: context, links, dialogs, panels and hover become model-visible
   assert.match(notes, /Below the visible area.*"Load more"/);
   assert.match(notes, /"Destinations" panel .*20 hidden below .*Kyoto/);
 });
+
+test('phase 3: checklist, per-requirement misses, and chat-model escalation on the same action space', async () => {
+  const { makeChecklist, verifyDone, decideWithChatModel } = await import('../extension/src/agent/decision.js');
+  const chatCfg = { id: 'groq', api: 'openai', baseUrl: 'https://api.groq.com/openai/v1', apiKey: 'k' };
+  mockFetch(() => ({ choices: [{ message: { content: '{"requirements":["Results for headphones are shown","Sorted by price, low to high", 7]}' } }] }));
+  assert.deepEqual(await makeChecklist({ goal: 'search headphones, sort by price', cfg: chatCfg, model: 'm' }), ['Results for headphones are shown', 'Sorted by price, low to high']);
+  mockFetch(() => ({ choices: [{ message: { content: 'not json' } }] }));
+  assert.deepEqual(await makeChecklist({ goal: 'x', cfg: chatCfg, model: 'm' }), []);
+
+  // Whole-goal verdict decides; only a "no" asks per requirement, to name what is missing.
+  const settings = structuredClone(DEFAULTS);
+  settings.ultrafast.backend = 'inception';
+  const cfg = { id: 'inception', baseUrl: 'https://api.inceptionlabs.ai/v1', apiKey: 'k' };
+  const calls = mockFetch((body) => (body.questions.done
+    ? { answers: { done: { choice: 'no', confidence: 0.8, probabilities: { yes: 0.2, no: 0.8 } } } }
+    : { answers: { r0: { choice: 'met', confidence: 0.9, probabilities: { met: 0.9, not_met: 0.1 } }, r1: { choice: 'not_met', confidence: 0.9, probabilities: { met: 0.1, not_met: 0.9 } } } }));
+  const check = await verifyDone({ snap, goal: 'search and sort', history: [], settings, decisionCfg: cfg, requirements: ['Results shown', 'Sorted by price'] });
+  assert.equal(check.done, false);
+  assert.deepEqual(check.unmet, ['Sorted by price']);
+  assert.deepEqual(check.met, [true, false]);
+  assert.equal(calls.length, 2);
+
+  // Escalated decisions still resolve only to offered actions.
+  const { actions } = buildActions(snap);
+  mockFetch(() => ({ choices: [{ message: { content: '{"operation":"CLICK","target":"2","reason":"submit"}' } }] }));
+  const d = await decideWithChatModel({ snap, actions, goal: 'search', history: [], cfg: chatCfg, model: 'big' });
+  assert.ok(d.escalated);
+  assert.equal(actions.find((a) => a.id === d.choice).label, 'Search');
+  mockFetch(() => ({ choices: [{ message: { content: '{"operation":"CLICK","target":"#search-btn"}' } }] }));
+  await assert.rejects(decideWithChatModel({ snap, actions, goal: 'search', history: [], cfg: chatCfg, model: 'big' }), /not valid for CLICK/);
+});

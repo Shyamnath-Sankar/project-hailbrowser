@@ -159,7 +159,7 @@ npx puppeteer browsers install chrome     # once
 node scripts/e2e-browser.mjs              # real Chrome + extension + MCP server + scripted fake model
 node scripts/stress-browser.mjs           # ~2 min: 40-subtask task under injected model errors, worker killed mid-task,
                                           # deep research on broken pages, storage churn (fake model, no API calls)
-INCEPTION_API_KEY=sk_... node scripts/bench-fast.mjs   # Fast-mode benchmark: 17 hard-case fixture tasks, real model
+INCEPTION_API_KEY=sk_... node scripts/bench-fast.mjs   # Fast-mode benchmark: 21 hard-case fixture tasks, real model
                                           # (BENCH_MODE=normal compares Chat mode; BENCH_ONLY=enter,dup runs a subset)
 npm run sync-schemas                      # after editing extension/src/tools/schemas.js
 ```

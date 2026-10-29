@@ -59,6 +59,7 @@ export const DEFAULTS = {
     textProvider: 'anthropic',
     textModel: 'claude-haiku-5-5',
     maxActions: 60,
+    useChatModel: true, // chat model writes a goal checklist and takes over hard steps
   },
   tasks: { stepsPerSubtask: 40, maxTotalSteps: 400 },
   research: { depth: 'standard', engine: 'duckduckgo', customUrl: '' },
