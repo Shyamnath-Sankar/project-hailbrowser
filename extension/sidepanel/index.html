@@ -185,6 +185,8 @@
         <label>Decision model type
           <select name="ultrafast.backend">
             <option value="systemone">Decision API (TypeSafe Jev or compatible)</option>
+            <option value="openrouter">OpenRouter decision model (e.g. Respan span-01-lite)</option>
+            <option value="inception">Inception decision model (Mercury, direct API)</option>
             <option value="choice">Letter-choice model (e.g. Together Tev1)</option>
             <option value="llm">Any chat model (one JSON reply per step)</option>
           </select>
@@ -195,6 +197,15 @@
             <label>URL <input name="ultrafast.systemoneUrl" spellcheck="false" /></label>
             <label>Model <input name="ultrafast.systemoneModel" spellcheck="false" placeholder="jev-latest" /></label>
           </details>
+        </div>
+        <div data-show="ultrafast.backend=openrouter">
+          <label>OpenRouter API key <input type="password" name="providers.openrouter.apiKey" spellcheck="false" placeholder="Paste your OpenRouter API key" /></label>
+          <label>Model <input name="ultrafast.openrouterModel" spellcheck="false" placeholder="respan/span-01-lite:free" /></label>
+        </div>
+        <div data-show="ultrafast.backend=inception">
+          <label>Mercury API key <input type="password" name="providers.inception.apiKey" spellcheck="false" placeholder="Paste your Inception (Mercury) API key" /></label>
+          <p class="hint">Get one at platform.inceptionlabs.ai. Stored only in this browser.</p>
+          <label>Model <input name="ultrafast.inceptionModel" spellcheck="false" placeholder="mercury-decide" /></label>
         </div>
         <div data-show="ultrafast.backend=choice">
           <label>Provider <select name="ultrafast.choiceProvider" data-providers></select></label>

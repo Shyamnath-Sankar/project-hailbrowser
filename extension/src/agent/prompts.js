@@ -23,6 +23,7 @@ its matching autocomplete suggestion selected. For date pickers, CLICK the field
 Set every requested filter/control; a matching result alone does not prove a requested filter was set.
 Do not toggle a checkbox, switch, or radio already in the requested state.
 Submit populated search fields before opening a result; a populated field alone is not an applied search.
+If the goal names a site you are not on and an Open operation for it is offered, choose it.
 WAIT only when the needed control is absent/disabled, or submitted results are still loading.
 If Search/Submit is visible and the required fields are ready, CLICK it immediately.
 Recent WAIT actions are not evidence of loading. Prefer a useful visible control over WAIT.

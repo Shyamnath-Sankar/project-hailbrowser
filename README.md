@@ -60,11 +60,13 @@ page ──► indexed element table ──► ONE decision request ──► ex
           [3] checkbox "Nonstop"        target:    an index from the table
 ```
 
-The model never writes selectors, coordinates or code — it picks an **operation** and an **observed element index**. The executor re-checks that the page and target are unchanged before every input, and retries the decision (not the action) if they changed.
+The model never writes selectors, coordinates or code — it picks an **operation** and an **observed element index**. The executor re-checks that the page and target are unchanged before every input, and retries the decision (not the action) if they changed. It can open a site only when your goal names it (a URL, a domain, or a well-known name such as YouTube or Wikipedia) and can go back a page; started from a Chrome page such as a new tab, it opens that site or searches your goal first. A DONE claim gets a second yes/no check before the run reports success.
 
-Three decision backends:
+Five decision backends:
 
 - **Decision API** (default) — the TypeSafe `systemone` request format used by **Jev**: operation + one speculative target head per operation, answered in a single round trip with probabilities. Point the URL/model at any compatible decision model. A small text model writes field values for `TYPE_TEXT`.
+- **OpenRouter decision model** — yes/no scoring models such as `respan/span-01-lite:free`, which OpenRouter serves on `/api/alpha/decisions` (not `/chat/completions`). Every candidate action becomes one yes/no question in a single request and the best-scoring one wins; scores under 0.2 execute nothing. Uses your OpenRouter key from Settings. `inception/mercury-decide` (paid, about $0.000004 per call) works the same way; its `:free` variant is not available.
+- **Inception decision model (direct)** — `mercury-decide` on Inception's own API (`POST https://api.inceptionlabs.ai/v1/decisions`), which supports native multi-choice questions with probabilities, so each step is one request. Uses your Inception key from Settings; about $0.02 per million input tokens.
 - **Letter-choice model** — small classifiers such as Together's `together/Tev1-4B-experimental` that answer one letter per question. The operation question and each operation's target question run in parallel, so a step is still one round trip.
 - **Any LLM** — one JSON call per step that returns operation, target *and* the text to type. Use a fast model (Groq, Gemini Flash, Claude Haiku).
 

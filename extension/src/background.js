@@ -6,6 +6,7 @@ import { collection, uid } from './store.js';
 import { executeTool } from './tools/execute.js';
 import { runNormal } from './agent/normal.js';
 import { runUltrafast } from './agent/ultrafast.js';
+import { sitesFromGoal } from './agent/sites.js';
 import { applyAnswer, newTask, runTask, taskStore } from './agent/tasks.js';
 import { chatStore, chatTitle, newChat, pushEvent, storableMessages } from './agent/chats.js';
 import { addFact, cleanFact, cleanSite, clearMemory, getMemory, memoryPrompt, REMEMBER_TOOL, rememberIntent, removeFact, updateFact } from './agent/memory.js';
@@ -183,6 +184,8 @@ async function handleTaskMessage(msg, port) {
     broadcast({ type: 'task_removed', id: t.id });
   }
 }
+
+const START_URL = 'https://duckduckgo.com/';
 
 function describeRun() {
   if (!run) return 'nothing';
@@ -409,9 +412,19 @@ async function startRun({ goal, mode, url, tabId, source, values, signal, who })
   try {
     const tab = await page.resolveTab(tabId);
     page.setCurrentTab(tab.id);
+    // Chrome blocks extensions on new-tab and chrome:// pages: open the site the goal names,
+    // or else search the goal with the default search engine, so the run has a page to work on.
+    const blocked = !url && /^(chrome|edge|about|devtools|chrome-extension|chrome-search):/i.test(tab.url || '');
+    const site = blocked ? sitesFromGoal(goal)[0] : null;
     if (url) await page.navigate(tab.id, url);
+    else if (site) await page.navigate(tab.id, site.url);
+    else if (blocked) await page.searchFromBlocked(tab.id, goal, START_URL);
     pulseIndicator(tab.id, mode === 'ultrafast' ? 'HailBrowser Ultrafast is working' : 'HailBrowser is working', 0);
     emit({ type: 'user', text: goal, mode });
+    if (blocked) {
+      emit({ type: 'status', text: site ? `Started on ${site.label.replace(/^Open /, '')} (this tab was a Chrome page extensions cannot use).`
+        : 'This tab was a Chrome page extensions cannot use, so I searched for your goal first.' });
+    }
     if (inChat && !chat.title) chat.title = chatTitle(goal);
     let result;
     if (mode === 'ultrafast') {

@@ -1,4 +1,4 @@
-import { DEFAULTS, PROVIDERS, getSettings, saveSettings } from '../src/settings.js';
+import { DEFAULTS, PROVIDERS, SCORE_BACKENDS, getSettings, saveSettings } from '../src/settings.js';
 import { chatMarkdown } from '../src/agent/chats.js';
 import { buildSchedule, describeWhen, MODES as JOB_MODES, relativeTime } from '../src/agent/schedule.js';
 import { DEPTHS, reportMarkdown, RUNNING as RESEARCH_RUNNING } from '../src/agent/reports.js';
@@ -65,6 +65,7 @@ function missingSetup(mode) {
   if (mode === 'ultrafast') {
     const uf = settings.ultrafast;
     if (uf.backend === 'systemone' && !uf.systemoneKey) return 'fast';
+    if ((SCORE_BACKENDS.has(uf.backend) || uf.backend === 'inception') && !keyFor(uf.backend)) return 'fast';
     if (uf.backend === 'choice' && !keyFor(uf.choiceProvider)) return 'fast';
     if (uf.backend === 'llm' && !keyFor(uf.decisionProvider)) return 'fast';
     return null;
@@ -751,7 +752,7 @@ for (const b of document.querySelectorAll('.modes button')) b.addEventListener('
 function caption() {
   const uf = settings.ultrafast;
   if (settings.mode === 'ultrafast') {
-    return `Decides with ${uf.backend === 'llm' ? uf.decisionModel : uf.backend === 'choice' ? uf.choiceModel : uf.systemoneModel}`;
+    return `Decides with ${uf.backend === 'llm' ? uf.decisionModel : uf.backend === 'choice' ? uf.choiceModel : SCORE_BACKENDS.has(uf.backend) || uf.backend === 'inception' ? uf[`${uf.backend}Model`] : uf.systemoneModel}`;
   }
   const base = `${settings.normal.model} · ${PROVIDERS[settings.normal.provider]?.label || ''}`;
   return memory.length && settings.memory?.enabled !== false ? `${base} · ${memory.length} memor${memory.length === 1 ? 'y' : 'ies'}` : base;
@@ -1041,7 +1042,7 @@ function buildSettingsForm() {
   $('#keys').innerHTML = Object.entries(PROVIDERS).map(([id, p]) => `
     <label>${esc(p.label)}${p.keyless ? ' (optional)' : ''}
       <input type="password" name="providers.${id}.apiKey" placeholder="API key" spellcheck="false" />
-      ${p.keyless || ['custom', 'openrouter', 'together'].includes(id) ? `<input name="providers.${id}.baseUrl" placeholder="${esc(p.baseUrl || 'https://your-endpoint/v1')}" spellcheck="false" />` : ''}
+      ${p.keyless || ['custom', 'openrouter', 'together', 'inception'].includes(id) ? `<input name="providers.${id}.baseUrl" placeholder="${esc(p.baseUrl || 'https://your-endpoint/v1')}" spellcheck="false" />` : ''}
     </label>`).join('');
   for (const inp of form.querySelectorAll('input[list]')) {
     const dl = document.createElement('datalist');
@@ -1104,6 +1105,8 @@ form.addEventListener('input', (e) => {
     set(settings, `providers.${form.elements[f.dataset.urlInput].value}.baseUrl`, f.value.trim().replace(/\/+$/, ''));
   } else if (f.name) {
     set(settings, f.name, f.type === 'checkbox' ? f.checked : f.type === 'number' ? Number(f.value) : f.value.trim());
+    // A key can appear twice (Fast mode and API keys): keep the copies in step.
+    for (const twin of form.querySelectorAll(`[name="${f.name}"]`)) if (twin !== f && twin.type !== 'checkbox') twin.value = f.value;
     if (f.tagName === 'SELECT' && /(^normal\.provider$|Provider$)/.test(f.name)) {
       const modelField = f.name === 'normal.provider' ? 'normal.model' : f.name.replace('Provider', 'Model');
       const first = PROVIDERS[f.value]?.models?.[0];

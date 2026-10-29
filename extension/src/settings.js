@@ -15,6 +15,8 @@ export const PROVIDERS = {
     models: ['llama-3.3-70b-versatile', 'moonshotai/kimi-k2-instruct'] },
   deepseek: { label: 'DeepSeek', api: 'openai', baseUrl: 'https://api.deepseek.com/v1', keyless: false,
     models: ['deepseek-chat'] },
+  inception: { label: 'Inception (Mercury)', api: 'openai', baseUrl: 'https://api.inceptionlabs.ai/v1', keyless: false,
+    models: ['mercury-2', 'mercury-coder', 'mercury-small'] },
   ollama: { label: 'Ollama (local)', api: 'openai', baseUrl: 'http://localhost:11434/v1', keyless: true,
     models: ['qwen3:8b', 'llama3.2', 'gemma3'] },
   lmstudio: { label: 'LM Studio (local)', api: 'openai', baseUrl: 'http://localhost:1234/v1', keyless: true, models: [] },
@@ -26,9 +28,18 @@ export const PROVIDERS = {
 // model (Jev or others) can be plugged in by URL + model name.
 export const DECISION_BACKENDS = {
   systemone: { label: 'Decision API (TypeSafe Jev or compatible)', url: 'https://api.typesafe.ai/v1/systemone', model: 'jev-latest' },
+  // OpenRouter "decisions" models (e.g. Respan) cannot use /chat/completions: they score yes/no
+  // questions on /api/alpha/decisions. Key and host come from the OpenRouter provider.
+  openrouter: { label: 'OpenRouter decision model (Respan yes/no scores)', model: 'respan/span-01-lite:free' },
+  // Inception's API: native choice questions at {baseUrl}/decisions; key and host come from the Inception provider.
+  inception: { label: 'Inception decision model (Mercury yes/no scores)', model: 'mercury-decide' },
   choice: { label: 'Letter-choice decision model (Together Tev1)' },
   llm: { label: 'Any LLM (single JSON decision call)' },
 };
+
+/** Backends that score yes/no questions on a provider's decisions endpoint (backend id = provider id).
+ *  Inception's own API answers native multi-choice questions, so it reuses the systemone path. */
+export const SCORE_BACKENDS = new Set(['openrouter']);
 
 export const DEFAULTS = {
   mode: 'normal',
@@ -39,6 +50,8 @@ export const DEFAULTS = {
     systemoneUrl: DECISION_BACKENDS.systemone.url,
     systemoneModel: DECISION_BACKENDS.systemone.model,
     systemoneKey: '',
+    openrouterModel: DECISION_BACKENDS.openrouter.model,
+    inceptionModel: DECISION_BACKENDS.inception.model,
     choiceProvider: 'together',
     choiceModel: 'together/Tev1-4B-experimental',
     decisionProvider: 'groq',

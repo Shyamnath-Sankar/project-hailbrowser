@@ -5,8 +5,9 @@ import * as cdp from '../browser/cdp.js';
 import * as inj from '../browser/inject.js';
 import * as page from '../browser/page.js';
 import { StaleError } from '../browser/page.js';
-import { providerConfig } from '../settings.js';
-import { buildActions, chooseValue, decide, fieldContext, fieldText } from './decision.js';
+import { providerConfig, SCORE_BACKENDS } from '../settings.js';
+import { buildActions, chooseValue, decide, fieldContext, fieldText, verifyDone } from './decision.js';
+import { onSite, sitesFromGoal } from './sites.js';
 
 const OBSERVE = { viewportOnly: true, maxElements: 400, maxText: 6000 };
 
@@ -33,6 +34,9 @@ async function observeAfter(tabId, action) {
 /** Execute one observed action. Throws StaleError (nothing executed) if the target changed. */
 async function act(tabId, action, snap, text) {
   if (action.kind === 'wait') return page.sleep(100);
+  // Navigation targets come from the user's goal (see sites.js), never from the model.
+  if (action.kind === 'open') return page.navigate(tabId, action.url);
+  if (action.kind === 'back') return page.navigate(tabId, 'back');
   if (action.kind === 'scroll') {
     // Scroll the page (or main scroll area) directly: exact, and no late wheel animation to race.
     const probe = await page.run(tabId, inj.scrollProbe, null, null, null, 0, action.delta);
@@ -77,9 +81,14 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
   // Caller-provided values (e.g. from OpenCode/Claude Code) are part of the goal for every decision.
   const goal = values ? `${task}\n\nValues to use: ${JSON.stringify(values)}` : task;
   const decisionCfg = uf.backend === 'llm' ? providerConfig(settings, uf.decisionProvider)
-    : uf.backend === 'choice' ? providerConfig(settings, uf.choiceProvider) : null;
-  let textCfg = null;
+    : uf.backend === 'choice' ? providerConfig(settings, uf.choiceProvider)
+      : uf.backend === 'openrouter' || uf.backend === 'inception' ? providerConfig(settings, uf.backend) : null;
+  let textCfg = null, textModel = uf.textModel;
   const history = [];
+  // Sites the goal names; offered as Open controls when the page is elsewhere.
+  const sites = sitesFromGoal(task);
+  // Rejected DONE claims, shown to the model as recent actions until the page changes.
+  const checks = [];
   let decisions = 0, stale = 0, pendingText = null, textCalls = 0;
   const t0 = performance.now();
   const elapsed = () => Math.round(performance.now() - t0);
@@ -100,10 +109,13 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
     if (decisions >= uf.maxActions * 2) return finish('blocked', 'Reached the decision budget.', snap);
     if (stale > 6) return finish('blocked', 'The page kept changing under every decision.', snap);
 
-    const { actions, omitted } = buildActions(snap);
+    const { actions, omitted } = buildActions(snap, {
+      sites: sites.filter((s) => !onSite(snap.url, s.url)),
+      canGoBack: history.some((h) => h.page_changed),
+    });
     // Tell the model when the candidate list was cut, so it scrolls instead of giving up.
     const view = omitted ? { ...snap, text: `[${omitted} more on-screen actions were not listed. Scroll to bring other parts of the page into view.]\n${snap.text}` } : snap;
-    const decision = await decide({ snap: view, actions, goal, history, settings, decisionCfg, signal });
+    const decision = await decide({ snap: view, actions, goal, history: [...history, ...checks], settings, decisionCfg, signal });
     decisions++;
     const action = actions.find((a) => a.id === decision.choice);
     emit({
@@ -114,6 +126,17 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
     if (decision.choice === 'DONE' || decision.choice === 'BLOCKED') {
       const now = await page.observe(tabId, OBSERVE);
       if (marker(now) !== marker(snap)) { snap = now; stale++; continue; } // decided on an old page
+      if (decision.choice === 'DONE') {
+        // DONE is a claim: ask once more whether every part of the goal is visibly met.
+        const check = await verifyDone({ snap, goal, history: [...history, ...checks], settings, decisionCfg, signal });
+        decisions++;
+        if (!check.done) {
+          emit({ type: 'status', text: 'Not finished yet: a check found part of the goal still open.' });
+          if (checks.length >= 1) return finish('blocked', 'The model said DONE twice, but a check found part of the goal is still not met on this page.', snap);
+          checks.push({ action: 'DONE was rejected: part of the goal is not met yet. Choose the operation that completes it.', kind: 'check', text: null, page_changed: false });
+          continue;
+        }
+      }
       return finish(decision.choice === 'DONE' ? 'done' : 'blocked', decision.reason, snap);
     }
 
@@ -137,11 +160,17 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
             try {
               textCfg = providerConfig(settings, uf.textProvider);
             } catch (e) {
-              if (!values) throw e;
-              return finish('blocked', `None of the provided values fits "${action.label}" and no text helper is configured. Add it to values.`, snap);
+              // Inception-only setup: its own chat model can write the text too.
+              if (uf.backend === 'inception') {
+                try { textCfg = providerConfig(settings, 'inception'); textModel = 'mercury-2'; } catch { /* fall through */ }
+              }
+              if (!textCfg) {
+                if (!values) throw e;
+                return finish('blocked', `None of the provided values fits "${action.label}" and no text helper is configured. Add it to values.`, snap);
+              }
             }
           }
-          const helper = await fieldText(context, textCfg, uf.textModel, signal);
+          const helper = await fieldText(context, textCfg, textModel, signal);
           textCalls++;
           text = helper.text;
           pendingText = { key, text };
@@ -174,6 +203,7 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
       throw e;
     }
     entry.page_changed = marker(next) !== marker(snap);
+    if (entry.page_changed) checks.length = 0;
     snap = next;
     emit({ type: 'action', ...entry, elapsedMs: elapsed() });
 

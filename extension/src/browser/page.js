@@ -99,6 +99,17 @@ export async function observe(tabId, opts) {
   return snap;
 }
 
+/** From a page extensions cannot use: search the goal with the user's default search engine (like the address bar), else open fallbackUrl. */
+export async function searchFromBlocked(tabId, goal, fallbackUrl) {
+  try {
+    await chrome.search.query({ text: goal.slice(0, 300), tabId });
+    await sleep(300);
+    await waitForLoad(tabId);
+  } catch {
+    await navigate(tabId, fallbackUrl);
+  }
+}
+
 export async function navigate(tabId, url) {
   if (url === 'back' || url === 'forward') {
     await (url === 'back' ? chrome.tabs.goBack(tabId) : chrome.tabs.goForward(tabId)).catch(() => {});

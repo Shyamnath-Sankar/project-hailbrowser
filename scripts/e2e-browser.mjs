@@ -113,7 +113,9 @@ function fakeModel(body) {
     const opt = (re) => task.options.find((o) => re.test(o.key) || re.test(o.description));
     const city = /"City":"(\w+)"/.exec(task.state)?.[1] || /GOAL: Search for (\w+)/.exec(task.state)?.[1];
     let pick;
-    if (/^Which provided value/.test(task.question)) {
+    if (/^Read the whole goal/.test(task.question)) {
+      pick = opt(/Searched:/.test(task.state) ? /^yes$/ : /^no$/); // DONE check
+    } else if (/^Which provided value/.test(task.question)) {
       pick = opt(/^City$/);
     } else if (/operation best advances/.test(task.question)) {
       pick = new RegExp(`Searched: ${city}`).test(task.state) ? opt(/^DONE$/)
@@ -121,6 +123,10 @@ function fakeModel(body) {
     } else if (/TYPE_TEXT/.test(task.question)) pick = opt(/Destination/);
     else if (/CLICK/.test(task.question)) pick = opt(/"Search"/);
     return { choices: [{ message: { content: (pick || task.options[0]).label } }] };
+  }
+  if (system.startsWith('Read the whole goal')) {
+    // DONE check: finished once the fixture shows a search result.
+    return { choices: [{ message: { content: JSON.stringify({ done: /Searched:|Page says/.test(body.messages[1].content) }) } }] };
   }
   if (system.startsWith('Return a JSON object with exactly one key, text')) {
     return { choices: [{ message: { content: '{"text":"Berlin"}' } }] };

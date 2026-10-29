@@ -69,6 +69,62 @@ test('systemone backend reads only the chosen operation target head', async () =
   assert.ok(calls[0].body.questions.select_target);
 });
 
+test('openrouter backend: one decisions request, yes/no scores, best-scoring candidate action', async () => {
+  const { actions } = buildActions(snap);
+  const settings = structuredClone(DEFAULTS);
+  settings.ultrafast.backend = 'openrouter';
+  const cfg = { id: 'openrouter', api: 'openai', baseUrl: 'https://openrouter.ai/api/v1', apiKey: 'k' };
+  // Each candidate action is one question; the highest score wins.
+  const calls = mockFetch((body) => ({
+    model: 'respan/span-01-lite-x',
+    answers: Object.fromEntries(Object.entries(body.questions).map(([key, q]) => {
+      const yes = q.criteria.true;
+      const noul = /should be: CLICK \[2\] button "Search"/.test(yes) ? 0.9 : 0.05;
+      return [key, { type: 'noul', noul }];
+    })),
+  }));
+  const d = await decide({ snap, actions, goal: 'search', history: [], settings, decisionCfg: cfg });
+  assert.equal(d.operation, 'CLICK');
+  assert.equal(actions.find((a) => a.id === d.choice).label, 'Search');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://openrouter.ai/api/alpha/decisions');
+  assert.equal(calls[0].headers.authorization, 'Bearer k');
+  assert.equal(calls[0].body.model, 'respan/span-01-lite:free');
+  assert.equal(typeof calls[0].body.state, 'string');
+  for (const q of Object.values(calls[0].body.questions)) {
+    assert.equal(q.type, 'noul');
+    assert.equal(typeof q.instructions, 'string');
+    assert.deepEqual(Object.keys(q.criteria), ['true', 'false']);
+  }
+
+  // Nothing credible -> no action; malformed scores -> no action.
+  mockFetch((body) => ({ answers: Object.fromEntries(Object.keys(body.questions).map((k) => [k, { noul: 0.01 }])) }));
+  await assert.rejects(decide({ snap, actions, goal: 'x', history: [], settings, decisionCfg: cfg }), /no credible action/);
+  mockFetch(() => ({ answers: {} }));
+  await assert.rejects(decide({ snap, actions, goal: 'x', history: [], settings, decisionCfg: cfg }), /Invalid decision response/);
+});
+
+test('inception backend: native choice questions on the provider /decisions endpoint', async () => {
+  const { actions } = buildActions(snap);
+  const settings = structuredClone(DEFAULTS);
+  settings.ultrafast.backend = 'inception';
+  const cfg = { id: 'inception', api: 'openai', baseUrl: 'https://api.inceptionlabs.ai/v1', apiKey: 'k' };
+  const calls = mockFetch(() => ({
+    model: 'mercury-decide',
+    answers: {
+      operation: { choice: 'CLICK', confidence: 0.9, probabilities: { CLICK: 0.9, TYPE_TEXT: 0.05, SELECT: 0.05, SCROLL_DOWN: 0, WAIT: 0, DONE: 0, BLOCKED: 0 } },
+      click_target: { choice: '2', confidence: 0.8, probabilities: { 1: 0.1, 2: 0.8, 3: 0.1 } },
+    },
+  }));
+  const d = await decide({ snap, actions, goal: 'search', history: [], settings, decisionCfg: cfg });
+  assert.equal(actions.find((a) => a.id === d.choice).label, 'Search');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://api.inceptionlabs.ai/v1/decisions');
+  assert.equal(calls[0].body.model, 'mercury-decide');
+  assert.equal(calls[0].headers.authorization, 'Bearer k');
+  assert.equal(calls[0].body.questions.operation.type, 'choice');
+});
+
 test('llm backend: one call returns operation, target and text', async () => {
   const { actions } = buildActions(snap);
   const settings = structuredClone(DEFAULTS);
@@ -215,4 +271,43 @@ test('buildActions reports how many candidates were cut', () => {
   const { actions, omitted } = buildActions({ elements, scroll: { y: 0, height: 600 }, viewport: { h: 600 } });
   assert.equal(omitted, 50);
   assert.equal(actions.filter((a) => a.kind === 'click').length, 250);
+});
+
+test('sites come only from the goal: names, domains and URLs, not e-mail addresses', async () => {
+  const { sitesFromGoal, onSite } = await import('../extension/src/agent/sites.js');
+  const urls = (g) => sitesFromGoal(g).map((s) => s.url);
+  assert.deepEqual(urls('open youtube and search for trending videos'), ['https://www.youtube.com/']);
+  assert.deepEqual(urls('go to flipkart.com and find headphones'), ['https://flipkart.com/']);
+  assert.deepEqual(urls('read https://example.org/a?b=1, then bbc.co.uk'), ['https://example.org/a?b=1', 'https://bbc.co.uk/']);
+  assert.deepEqual(urls('open google maps'), ['https://www.google.com/maps']);
+  assert.deepEqual(urls('email bob@gmail.com about it'), []);
+  assert.deepEqual(urls('Search this site for "wireless headphones"'), []);
+  assert.ok(onSite('https://m.youtube.com/watch?v=1', 'https://www.youtube.com/'));
+  assert.ok(!onSite('https://www.google.com/search?q=youtube', 'https://www.youtube.com/'));
+});
+
+test('buildActions offers Open and Go back controls; the model picks them by id only', async () => {
+  const { actions } = buildActions(snap, { sites: [{ label: 'Open youtube.com', url: 'https://www.youtube.com/' }], canGoBack: true });
+  const { controls } = actionSpace(actions);
+  assert.deepEqual(Object.keys(controls), ['SCROLL_DOWN', 'OPEN_1', 'GO_BACK', 'WAIT']);
+  assert.equal(controls.OPEN_1.url, 'https://www.youtube.com/');
+  assert.equal(controls.GO_BACK.kind, 'back');
+});
+
+test('verifyDone asks one yes/no question on each backend', async () => {
+  const { verifyDone } = await import('../extension/src/agent/decision.js');
+  const settings = structuredClone(DEFAULTS);
+  settings.ultrafast.backend = 'inception';
+  const cfg = { id: 'inception', api: 'openai', baseUrl: 'https://api.inceptionlabs.ai/v1', apiKey: 'k' };
+  let calls = mockFetch(() => ({ answers: { done: { choice: 'no', confidence: 0.9, probabilities: { yes: 0.1, no: 0.9 } } } }));
+  const no = await verifyDone({ snap, goal: 'sort by price', history: [], settings, decisionCfg: cfg });
+  assert.equal(no.done, false);
+  assert.equal(calls[0].url, 'https://api.inceptionlabs.ai/v1/decisions');
+  assert.deepEqual(Object.keys(calls[0].body.questions.done.criteria), ['yes', 'no']);
+
+  settings.ultrafast.backend = 'openrouter';
+  calls = mockFetch(() => ({ answers: { done: { type: 'noul', noul: 0.93 } } }));
+  const yes = await verifyDone({ snap, goal: 'search', history: [], settings, decisionCfg: { id: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', apiKey: 'k' } });
+  assert.equal(yes.done, true);
+  assert.equal(calls[0].body.questions.done.type, 'noul');
 });

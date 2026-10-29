@@ -43,7 +43,7 @@ A standard loop: the model gets the tool list (minus `run_task`), calls tools, s
 
 1. Observe on-screen elements → candidate actions (`click`, `fill`, `select` per option, `scroll`, `wait`).
 2. Build an index table (one index per node; each operation has its own valid targets).
-3. One decision request. With the Decision API, the operation head and every operation's target head are answered in parallel in the same round trip; only the chosen operation's head is read. With the LLM backend, one JSON reply carries operation, target and text.
+3. One decision request. With the Decision API, the operation head and every operation's target head are answered in parallel in the same round trip; only the chosen operation's head is read. With the OpenRouter backend, each candidate action is one yes/no question scored in a single request; the best score wins. With the LLM backend, one JSON reply carries operation, target and text.
 4. `TYPE_TEXT` asks the text helper for `{"text": ...}` unless the decision already supplied it. A generated value is reused across a stale retry only if the helper input is identical.
 5. Freshness guard: URL, form values and the target's semantics must match the observation; otherwise nothing is executed and the loop re-observes.
 6. Execute, log the action, then observe. After typing into a combobox it waits ≤200 ms for suggestions; otherwise ≤2 frames/50 ms.
