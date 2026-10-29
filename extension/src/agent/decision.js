@@ -16,7 +16,8 @@ export function buildActions(snap, { sites = [], canGoBack = false } = {}) {
   for (const el of snap.elements) {
     if (!el.inViewport || el.sensitive) continue;
     const base = { node: el.id, role: el.role, label: el.label };
-    for (const k of ['checked', 'selected', 'expanded']) if (el[k] != null) base[k] = el[k];
+    for (const k of ['checked', 'selected', 'expanded', 'ctx', 'newTab']) if (el[k] != null) base[k] = el[k];
+    if (el.href) base.link = linkHint(el.href, snap.url);
     if (el.options) {
       for (const op of el.options) {
         if (!op.selected) actions.push({ ...base, kind: 'select', value: op.value, current_value: el.value, label: `${el.label} → ${op.label}` });
@@ -24,6 +25,9 @@ export function buildActions(snap, { sites = [], canGoBack = false } = {}) {
     } else {
       actions.push({ ...base, kind: el.editable ? 'fill' : 'click', value: el.value || '' });
       if (el.editable) actions.push({ ...base, kind: 'click', value: el.value || '', label: `Open ${el.label}` });
+      // Many search boxes have no button: a filled field can be submitted with Enter.
+      if (el.editable && el.value && !el.inputType) actions.push({ ...base, kind: 'enter', value: el.value });
+      if (el.haspopup) actions.push({ ...base, kind: 'hover', value: el.value || '' });
     }
   }
   const omitted = Math.max(0, actions.length - MAX_CANDIDATES);
@@ -32,6 +36,12 @@ export function buildActions(snap, { sites = [], canGoBack = false } = {}) {
   const { y, height } = snap.scroll;
   if (y + snap.viewport.h < height - 2) actions.push({ id: 'scroll_down', kind: 'scroll', label: 'Scroll down', delta: Math.round(snap.viewport.h * 0.75) });
   if (y > 0) actions.push({ id: 'scroll_up', kind: 'scroll', label: 'Scroll up', delta: -Math.round(snap.viewport.h * 0.75) });
+  (snap.panels || []).forEach((p, i) => {
+    const step = 240;
+    if (p.down) actions.push({ id: `scroll_panel_${i + 1}_down`, kind: 'scroll', node: p.id, label: `Scroll down inside the "${p.label}" panel`, delta: step });
+    if (p.up) actions.push({ id: `scroll_panel_${i + 1}_up`, kind: 'scroll', node: p.id, label: `Scroll up inside the "${p.label}" panel`, delta: -step });
+  });
+  if (snap.dialog) actions.push({ id: 'press_escape', kind: 'key', key: 'Escape', label: `Press Escape to close the "${snap.dialog.label}" dialog` });
   sites.forEach((s, i) => actions.push({ id: `open_${i + 1}`, kind: 'open', label: s.label, url: s.url }));
   if (canGoBack) actions.push({ id: 'go_back', kind: 'back', label: 'Go back to the previous page' });
   actions.push({ id: 'wait', kind: 'wait', label: 'Wait for the page to update' });
@@ -41,7 +51,7 @@ export function buildActions(snap, { sites = [], canGoBack = false } = {}) {
 /** One index per observed element; each operation gets its own valid target choices. */
 export function actionSpace(actions) {
   const elements = [], indices = new Map(), targets = {}, controls = {};
-  const ops = { click: 'CLICK', fill: 'TYPE_TEXT', select: 'SELECT' };
+  const ops = { click: 'CLICK', fill: 'TYPE_TEXT', select: 'SELECT', enter: 'PRESS_ENTER', hover: 'HOVER' };
   for (const action of actions) {
     const operation = ops[action.kind];
     if (!operation) { controls[action.id.toUpperCase()] = action; continue; }
@@ -49,7 +59,7 @@ export function actionSpace(actions) {
       const index = String(elements.length + 1);
       indices.set(action.node, index);
       const element = { index, role: action.role, label: action.label.split(' → ')[0], operations: [] };
-      for (const k of ['value', 'checked', 'selected', 'expanded']) if (action[k] != null) element[k] = action[k];
+      for (const k of ['value', 'checked', 'selected', 'expanded', 'ctx', 'link', 'newTab']) if (action[k] != null) element[k] = action[k];
       if (action.kind === 'select') { element.value = action.current_value || ''; element.options = []; }
       elements.push(element);
     }
@@ -71,7 +81,36 @@ const OP_LABELS = {
   CLICK: 'Click an element, button, menu option, autocomplete suggestion, or calendar day.',
   TYPE_TEXT: 'Enter or replace text in an editable field.',
   SELECT: 'Select an observed dropdown value.',
+  PRESS_ENTER: 'Press Enter in a filled field: submits a search or form, also when no Search button is visible.',
+  HOVER: 'Move the mouse over a menu to open its submenu.',
 };
+
+/** Short link hint for the model: same-site path, or the other site's host. */
+function linkHint(href, pageUrl) {
+  try {
+    const u = new URL(href), p = new URL(pageUrl);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+    if (u.host === p.host) return u.pathname.length > 1 ? u.pathname.slice(0, 60) : null;
+    return u.host.replace(/^www\./, '');
+  } catch {
+    return null;
+  }
+}
+
+/** Page facts the element table cannot show: overlays, what is below the fold, inner panels. */
+export function pageNotes(snap) {
+  const notes = [];
+  if (snap.dialog) notes.push(`A dialog "${snap.dialog.label}" covers the page; only its controls can be used until it is closed.`);
+  if (snap.offscreenBelow?.length) notes.push(`Below the visible area (scroll down to reach): ${snap.offscreenBelow.map((l) => `"${l}"`).join(', ')}.`);
+  if (snap.offscreenAbove) notes.push(`${snap.offscreenAbove} more controls are above the visible area.`);
+  for (const p of snap.panels || []) {
+    const parts = [];
+    if (p.belowCount) parts.push(`${p.belowCount} hidden below (scroll down inside it): ${p.below.join(', ')}`);
+    if (p.aboveCount) parts.push(`${p.aboveCount} hidden above (scroll up inside it): ${p.above.join(', ')}`);
+    notes.push(`The "${p.label}" panel scrolls on its own${parts.length ? ` — ${parts.join('; ')}` : ''}.`);
+  }
+  return notes.join('\n');
+}
 
 function operationsFor(targets, controls) {
   const operations = {};
@@ -174,6 +213,9 @@ async function decideLLM(snap, actions, goal, history, uf, cfg, signal) {
 function elementTable(elements) {
   return elements.map((e) => {
     let line = `[${e.index}] ${e.role} "${e.label}" ops=${e.operations.join('/')}`;
+    if (e.ctx) line += ` in "${e.ctx}"`;
+    if (e.link) line += ` → ${e.link}`;
+    if (e.newTab) line += ' (opens a new tab)';
     if (e.value) line += ` value="${e.value}"`;
     for (const k of ['checked', 'selected', 'expanded']) if (e[k] != null) line += ` ${k}=${e[k]}`;
     if (e.options) line += `\n    options: ${e.options.map((o) => `${o.index}=${o.label.split(' → ').pop()}`).join(', ')}`;
@@ -343,7 +385,10 @@ const DONE_QUESTION = 'Read the whole goal, the current page and the recent acti
  */
 export async function verifyDone({ snap, goal, history, settings, decisionCfg, signal }) {
   const uf = settings.ultrafast;
-  const state = `GOAL: ${goal}\n\nPAGE: ${snap.title} — ${snap.url}\n\nRECENT ACTIONS: ${JSON.stringify(recent(history))}\n\nVISIBLE TEXT (untrusted):\n${snap.text.slice(0, 3000)}`;
+  // Field values (a dropdown still on "Relevance", an unticked filter) are what usually shows a goal is unfinished.
+  const fields = snap.elements.filter((e) => e.inViewport && !e.sensitive && (e.value || e.checked != null || e.selected != null || e.expanded != null))
+    .slice(0, 40).map((e) => `${e.role} "${e.label}"${e.value ? ` value="${e.value}"` : ''}${['checked', 'selected', 'expanded'].filter((k) => e[k] != null).map((k) => ` ${k}=${e[k]}`).join('')}`);
+  const state = `GOAL: ${goal}\n\nPAGE: ${snap.title} — ${snap.url}\n\nFIELDS:\n${fields.join('\n') || '(none)'}\n\nRECENT ACTIONS: ${JSON.stringify(recent(history))}\n\nVISIBLE TEXT (untrusted):\n${snap.text.slice(0, 3000)}`;
   if (SCORE_BACKENDS.has(uf.backend)) {
     const { scores } = await askScores(decisionCfg, uf[`${uf.backend}Model`], state, { done: yesNo(DONE_YES, DONE_NO, DONE_QUESTION) }, signal);
     return { done: scores.done >= 0.5, confidence: scores.done };
@@ -362,7 +407,7 @@ export async function verifyDone({ snap, goal, history, settings, decisionCfg, s
   if (!ep.key) throw new Error('Add your decision API key in Settings → Ultrafast.');
   const result = await postJson(ep.url, { authorization: `Bearer ${ep.key}` }, {
     model: ep.model,
-    state: { page: { url: snap.url, title: snap.title, text: snap.text.slice(0, 3000) }, recent_actions: recent(history) },
+    state: { page: { url: snap.url, title: snap.title, text: snap.text.slice(0, 3000) }, fields, recent_actions: recent(history) },
     questions: { done: { type: 'choice', criteria: { yes: DONE_YES, no: DONE_NO }, instructions: { goal, rules: DONE_QUESTION } } },
   }, signal);
   const answer = validateChoice(result.answers?.done, ['yes', 'no']);

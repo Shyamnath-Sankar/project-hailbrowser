@@ -24,6 +24,11 @@ Set every requested filter/control; a matching result alone does not prove a req
 Do not toggle a checkbox, switch, or radio already in the requested state.
 Submit populated search fields before opening a result; a populated field alone is not an applied search.
 If the goal names a site you are not on and an Open operation for it is offered, choose it.
+If a dialog covers the page, deal with it first: use its buttons (accept/close) or PRESS_ESCAPE.
+After typing a search, submit it: CLICK the Search button, or PRESS_ENTER in the field if there is none.
+If a needed control is listed below the visible area or inside a panel, scroll that way instead of giving up.
+Elements with the same label differ by their "in" context: pick the one whose context matches the goal.
+A menu that opens on hover needs HOVER before its items appear.
 WAIT only when the needed control is absent/disabled, or submitted results are still loading.
 If Search/Submit is visible and the required fields are ready, CLICK it immediately.
 Recent WAIT actions are not evidence of loading. Prefer a useful visible control over WAIT.

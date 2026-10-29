@@ -23,11 +23,11 @@ const snap = {
 test('buildActions: one candidate per operation, skips sensitive and offscreen', () => {
   const { actions } = buildActions(snap);
   const kinds = actions.map((a) => `${a.kind}:${a.label}`);
-  assert.deepEqual(kinds, ['fill:Where from?', 'click:Open Where from?', 'click:Search', 'click:Nonstop',
+  assert.deepEqual(kinds, ['fill:Where from?', 'click:Open Where from?', 'enter:Where from?', 'click:Search', 'click:Nonstop',
     'select:Class → Business', 'scroll:Scroll down', 'wait:Wait for the page to update']);
   const { elements, targets, controls } = actionSpace(actions);
   assert.equal(elements.length, 4);
-  assert.deepEqual(elements[0].operations, ['TYPE_TEXT', 'CLICK']);
+  assert.deepEqual(elements[0].operations, ['TYPE_TEXT', 'CLICK', 'PRESS_ENTER']);
   assert.deepEqual(Object.keys(targets.SELECT), ['4:1']);
   assert.deepEqual(Object.keys(controls), ['SCROLL_DOWN', 'WAIT']);
 });
@@ -56,7 +56,7 @@ test('systemone backend reads only the chosen operation target head', async () =
   const calls = mockFetch(() => ({
     model: 'jev-latest',
     answers: {
-      operation: { choice: 'CLICK', confidence: 0.9, probabilities: { CLICK: 0.9, TYPE_TEXT: 0.05, SELECT: 0.05, SCROLL_DOWN: 0, WAIT: 0, DONE: 0, BLOCKED: 0 } },
+      operation: { choice: 'CLICK', confidence: 0.9, probabilities: { CLICK: 0.9, TYPE_TEXT: 0.05, SELECT: 0.05, PRESS_ENTER: 0, SCROLL_DOWN: 0, WAIT: 0, DONE: 0, BLOCKED: 0 } },
       click_target: { choice: '2', confidence: 0.8, probabilities: { 1: 0.1, 2: 0.8, 3: 0.1 } },
       type_text_target: { choice: 'garbage' }, // unused head: must not matter
     },
@@ -112,7 +112,7 @@ test('inception backend: native choice questions on the provider /decisions endp
   const calls = mockFetch(() => ({
     model: 'mercury-decide',
     answers: {
-      operation: { choice: 'CLICK', confidence: 0.9, probabilities: { CLICK: 0.9, TYPE_TEXT: 0.05, SELECT: 0.05, SCROLL_DOWN: 0, WAIT: 0, DONE: 0, BLOCKED: 0 } },
+      operation: { choice: 'CLICK', confidence: 0.9, probabilities: { CLICK: 0.9, TYPE_TEXT: 0.05, SELECT: 0.05, PRESS_ENTER: 0, SCROLL_DOWN: 0, WAIT: 0, DONE: 0, BLOCKED: 0 } },
       click_target: { choice: '2', confidence: 0.8, probabilities: { 1: 0.1, 2: 0.8, 3: 0.1 } },
     },
   }));
@@ -192,8 +192,8 @@ test('choice backend (Together Tev1 format): parallel questions, letter answers'
   const d = await decide({ snap, actions, goal: 'search', history: [], settings, decisionCfg: cfg });
   assert.equal(d.operation, 'CLICK');
   assert.equal(actions.find((a) => a.id === d.choice).label, 'Search');
-  // operation + one target question per available operation (CLICK, TYPE_TEXT, SELECT)
-  assert.equal(calls.length, 4);
+  // operation + one target question per available operation (CLICK, TYPE_TEXT, SELECT, PRESS_ENTER)
+  assert.equal(calls.length, 5);
   const b = calls[0].body;
   assert.equal(b.model, 'together/Tev1-4B-experimental');
   assert.equal(b.temperature, 0);
@@ -310,4 +310,32 @@ test('verifyDone asks one yes/no question on each backend', async () => {
   const yes = await verifyDone({ snap, goal: 'search', history: [], settings, decisionCfg: { id: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', apiKey: 'k' } });
   assert.equal(yes.done, true);
   assert.equal(calls[0].body.questions.done.type, 'noul');
+});
+
+test('perception: context, links, dialogs, panels and hover become model-visible facts and controls', async () => {
+  const { pageNotes } = await import('../extension/src/agent/decision.js');
+  const page = {
+    url: 'https://shop.test/list', title: 'Shop', text: '', viewport: { w: 1000, h: 800 }, scroll: { y: 0, height: 800 },
+    elements: [
+      { id: 1, role: 'button', label: 'Add to cart', ctx: 'Sony WH-1000XM5 ₹26,990', inViewport: true },
+      { id: 2, role: 'button', label: 'Add to cart', ctx: 'JBL Tune 510 ₹3,499', inViewport: true },
+      { id: 3, role: 'link', label: 'Products', haspopup: true, href: 'https://shop.test/products', inViewport: true },
+      { id: 4, role: 'link', label: 'Help', href: 'https://help.other.test/a', newTab: true, inViewport: true },
+    ],
+    dialog: { label: 'Cookies' }, offscreenBelow: ['Load more'], offscreenAbove: 0,
+    panels: [{ id: 9, label: 'Destinations', down: true, up: false, below: ['Oslo', '…', 'Kyoto'], belowCount: 20, above: [], aboveCount: 0 }],
+  };
+  const { actions } = buildActions(page);
+  const { elements, targets, controls } = actionSpace(actions);
+  assert.equal(elements[0].ctx, 'Sony WH-1000XM5 ₹26,990');
+  assert.equal(elements[2].link, '/products');
+  assert.equal(elements[3].link, 'help.other.test');
+  assert.ok(elements[3].newTab);
+  assert.deepEqual(Object.keys(targets.HOVER), ['3']);
+  assert.equal(controls.PRESS_ESCAPE.key, 'Escape');
+  assert.equal(controls.SCROLL_PANEL_1_DOWN.node, 9);
+  const notes = pageNotes(page);
+  assert.match(notes, /dialog "Cookies" covers the page/);
+  assert.match(notes, /Below the visible area.*"Load more"/);
+  assert.match(notes, /"Destinations" panel .*20 hidden below .*Kyoto/);
 });

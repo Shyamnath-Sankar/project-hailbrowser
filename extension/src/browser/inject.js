@@ -60,7 +60,34 @@ export function pageSnapshot(opts) {
 
   const W = innerWidth, Hh = innerHeight;
   const elements = [];
-  let omitted = 0, offscreen = 0;
+  let omitted = 0, offscreen = 0, above = 0;
+  const below = [], offs = [];
+  const humanize = (s) => clean(String(s || '').replace(/[_-]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2'), 40);
+
+  // Something covering the page (a modal <dialog>, or a large fixed overlay such as a cookie wall):
+  // controls outside it cannot be clicked, so they are left out and the overlay is reported.
+  let blocker = [...document.querySelectorAll('dialog[open]')].find((d) => d.matches(':modal')) || null;
+  if (!blocker) {
+    for (let n = document.elementFromPoint(W / 2, Hh / 2); n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+      if (getComputedStyle(n).position !== 'fixed') continue;
+      const r = n.getBoundingClientRect();
+      if (r.width * r.height >= 0.4 * W * Hh) blocker = n;
+    }
+  }
+
+  // Scrollable inner panels that hide some of their content (found from offscreen elements).
+  const panels = new Set(), checked = new Set();
+  const noteScroller = (e) => {
+    for (let c = e.parentElement; c && c !== document.body && c !== document.documentElement && panels.size < 3; c = c.parentElement) {
+      if (checked.has(c)) return;
+      checked.add(c);
+      if (!/(auto|scroll|overlay)/.test(getComputedStyle(c).overflowY) || c.scrollHeight <= c.clientHeight + 4) continue;
+      const r = c.getBoundingClientRect();
+      if (r.bottom <= 0 || r.top >= Hh || r.right <= 0 || r.left >= W || r.height < 40) continue;
+      panels.add(c);
+      return;
+    }
+  };
   for (const e of document.querySelectorAll(selector)) {
     if (e.type === 'hidden' || e.type === 'file') continue;
     if (e.matches(':disabled') || e.closest('[aria-disabled="true"]') || !visible(e)) continue;
@@ -71,9 +98,14 @@ export function pageSnapshot(opts) {
     if (r.width <= 0 || r.height <= 0) continue;
     const cx = r.x + r.width / 2, cy = r.y + r.height / 2;
     const inViewport = cx >= 0 && cy >= 0 && cx < W && cy < Hh;
-    if (o.viewportOnly && !inViewport) { offscreen++; continue; }
+    if (o.viewportOnly && blocker && !blocker.contains(e)) continue; // covered by the overlay: not clickable
+    if (o.viewportOnly && !inViewport) {
+      offscreen++;
+      if (offs.length < 1500) offs.push({ e, cy, rname });
+      continue;
+    }
     if (elements.length >= o.maxElements) { omitted++; continue; }
-    const el = { id: identity(e), role: rname, label: clean(name(e), 160) || rname,
+    const el = { id: identity(e), role: rname, label: clean(name(e), 160) || humanize(e.getAttribute('name') || e.id) || rname,
       rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }, inViewport };
     for (const key of ['checked', 'selected', 'expanded']) {
       const v = e.getAttribute('aria-' + key);
@@ -81,6 +113,10 @@ export function pageSnapshot(opts) {
     }
     if (['checkbox', 'radio'].includes(e.type)) el.checked = String(e.checked);
     if (e.tagName === 'A' && e.getAttribute('href')) el.href = e.href.slice(0, 200);
+    if (e.tagName === 'A' && e.target === '_blank') el.newTab = true;
+    const popup = e.getAttribute('aria-haspopup');
+    const sub = e.nextElementSibling;
+    if ((popup && popup !== 'false') || (sub && !visible(sub) && sub.querySelector('a[href],button'))) el.haspopup = true;
     if (e.tagName === 'INPUT' && ['date', 'time', 'datetime-local', 'month', 'week', 'color', 'range', 'number'].includes(e.type)) el.inputType = e.type;
     if (e.tagName === 'SELECT' && e.multiple) el.multiple = true;
     if (e.tagName === 'SELECT') {
@@ -98,6 +134,51 @@ export function pageSnapshot(opts) {
       if (e.getAttribute('placeholder') && el.label !== e.getAttribute('placeholder')) el.placeholder = clean(e.getAttribute('placeholder'), 80);
     }
     elements.push(el);
+  }
+
+  // Inner panels: items scrolled out of sight inside a panel are hidden even when they lie inside
+  // the window, and are reported per panel (with which way to scroll) instead of as page content.
+  for (const f of offs) { if (checked.size >= 3000 || panels.size >= 3) break; noteScroller(f.e); }
+  const panelInfo = new Map([...panels].map((p) => [p, { r: p.getBoundingClientRect(), below: [], above: [] }]));
+  const panelOf = (e) => { for (const [p, info] of panelInfo) if (p.contains(e)) return info; return null; };
+  if (panelInfo.size) {
+    for (let i = elements.length - 1; i >= 0; i--) {
+      const info = panelOf(H.nodes.get(elements[i].id));
+      if (!info) continue;
+      const cy = elements[i].rect.y + elements[i].rect.h / 2;
+      if (cy < info.r.top || cy > info.r.bottom) {
+        (cy > info.r.bottom ? info.below : info.above).unshift(elements[i].label);
+        elements.splice(i, 1);
+      }
+    }
+  }
+  for (const f of offs) {
+    const info = panelOf(f.e);
+    if (info) (f.cy > info.r.bottom ? info.below : info.above).push(f);
+    else if (f.cy >= Hh) { if (below.length < 8) below.push(clean(name(f.e), 50) || f.rname); }
+    else if (f.cy < 0) above++;
+  }
+  const itemLabel = (x) => (typeof x === 'string' ? x : clean(name(x.e), 40) || x.rname);
+  const sample = (list) => (list.length <= 6 ? list : [...list.slice(0, 3), '…', ...list.slice(-3)]).map((x) => (x === '…' ? x : itemLabel(x)));
+
+  // Context for ambiguous controls: the text of the smallest surrounding card/row/group
+  // ("Add to cart" ×6 → "Sony WH-1000XM5 ₹26,990"), and the fieldset/group name for choices.
+  const counts = new Map();
+  for (const el of elements) counts.set(el.label, (counts.get(el.label) || 0) + 1);
+  const around = (e, label) => {
+    for (let c = e.parentElement, d = 0; c && c !== document.body && d < 6; c = c.parentElement, d++) {
+      const t = clean(c.innerText, 300);
+      if (t.length > label.length + 2) return t.length > 240 ? '' : clean(t.split(label).join(' '), 110);
+    }
+    return '';
+  };
+  for (const el of elements) {
+    const e = H.nodes.get(el.id);
+    const ambiguous = counts.get(el.label) > 1 || el.label.length <= 3 || el.label === el.role;
+    const group = ['checkbox', 'radio', 'switch'].includes(el.role)
+      ? clean(e.closest('fieldset')?.querySelector('legend')?.textContent || e.closest('[role=radiogroup],[role=group]')?.getAttribute('aria-label'), 40) : '';
+    const ctx = [group, ambiguous ? around(e, el.label) : ''].filter(Boolean).join(' · ');
+    if (ctx) el.ctx = clean(ctx, 120);
   }
 
   // Visible text in the viewport only, so offscreen footers don't fill model context.
@@ -122,6 +203,13 @@ export function pageSnapshot(opts) {
     viewport: { w: W, h: Hh, dpr: devicePixelRatio },
     scroll: { x: Math.round(scrollX), y: Math.round(scrollY), height: document.documentElement.scrollHeight, width: document.documentElement.scrollWidth },
     elements, omitted, offscreen, text: words.join('\n').slice(0, o.maxText), formKey,
+    dialog: blocker ? { label: clean(blocker.getAttribute('aria-label') || blocker.querySelector('h1,h2,h3,[role=heading]')?.textContent || blocker.innerText, 80) || 'dialog' } : null,
+    offscreenBelow: below, offscreenAbove: above,
+    panels: [...panelInfo].map(([c, info]) => ({
+      id: identity(c), label: clean(c.getAttribute('aria-label') || c.previousElementSibling?.textContent || c.innerText, 40),
+      down: c.scrollTop + c.clientHeight < c.scrollHeight - 1, up: c.scrollTop > 0,
+      below: sample(info.below), belowCount: info.below.length, above: sample(info.above), aboveCount: info.above.length,
+    })),
   };
 }
 

@@ -6,7 +6,7 @@ import * as inj from '../browser/inject.js';
 import * as page from '../browser/page.js';
 import { StaleError } from '../browser/page.js';
 import { providerConfig, SCORE_BACKENDS } from '../settings.js';
-import { buildActions, chooseValue, decide, fieldContext, fieldText, verifyDone } from './decision.js';
+import { buildActions, chooseValue, decide, fieldContext, fieldText, pageNotes, verifyDone } from './decision.js';
 import { onSite, sitesFromGoal } from './sites.js';
 
 const OBSERVE = { viewportOnly: true, maxElements: 400, maxText: 6000 };
@@ -37,9 +37,10 @@ async function act(tabId, action, snap, text) {
   // Navigation targets come from the user's goal (see sites.js), never from the model.
   if (action.kind === 'open') return page.navigate(tabId, action.url);
   if (action.kind === 'back') return page.navigate(tabId, 'back');
+  if (action.kind === 'key') return cdp.pressChord(tabId, action.key);
   if (action.kind === 'scroll') {
-    // Scroll the page (or main scroll area) directly: exact, and no late wheel animation to race.
-    const probe = await page.run(tabId, inj.scrollProbe, null, null, null, 0, action.delta);
+    // Scroll the page, or an observed inner panel, directly: exact, and no late wheel animation to race.
+    const probe = await page.run(tabId, inj.scrollProbe, action.node ?? null, null, null, 0, action.delta);
     if (!probe || probe.error) return;
     const after = await page.run(tabId, inj.scrollCheck, probe, 0, action.delta, 'direct');
     if (after && !after.moved) {
@@ -58,11 +59,19 @@ async function act(tabId, action, snap, text) {
     if (res?.error) throw new StaleError(res.error);
     return;
   }
+  if (action.kind === 'enter') {
+    await page.run(tabId, inj.focusNode, action.node);
+    return cdp.pressChord(tabId, 'Enter');
+  }
   let point;
   try {
     point = await page.pointFor(tabId, action.node);
   } catch (e) {
     throw new StaleError(e.message);
+  }
+  if (action.kind === 'hover') {
+    await cdp.mouseMove(tabId, point.x, point.y);
+    return page.sleep(250); // let the submenu open
   }
   await cdp.mouseClick(tabId, point.x, point.y);
   if (action.kind === 'fill') {
@@ -89,6 +98,7 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
   const sites = sitesFromGoal(task);
   // Rejected DONE claims, shown to the model as recent actions until the page changes.
   const checks = [];
+  let nudgedSubmit = false, rejectedDone = 0;
   let decisions = 0, stale = 0, pendingText = null, textCalls = 0;
   const t0 = performance.now();
   const elapsed = () => Math.round(performance.now() - t0);
@@ -113,8 +123,10 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
       sites: sites.filter((s) => !onSite(snap.url, s.url)),
       canGoBack: history.some((h) => h.page_changed),
     });
-    // Tell the model when the candidate list was cut, so it scrolls instead of giving up.
-    const view = omitted ? { ...snap, text: `[${omitted} more on-screen actions were not listed. Scroll to bring other parts of the page into view.]\n${snap.text}` } : snap;
+    // Page facts the element table can't show (overlays, content below the fold, inner panels),
+    // and a note when the candidate list was cut, so the model scrolls instead of giving up.
+    const notes = [omitted ? `[${omitted} more on-screen actions were not listed. Scroll to bring other parts of the page into view.]` : '', pageNotes(snap)].filter(Boolean).join('\n');
+    const view = notes ? { ...snap, text: `${notes}\n${snap.text}` } : snap;
     const decision = await decide({ snap: view, actions, goal, history: [...history, ...checks], settings, decisionCfg, signal });
     decisions++;
     const action = actions.find((a) => a.id === decision.choice);
@@ -126,13 +138,23 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
     if (decision.choice === 'DONE' || decision.choice === 'BLOCKED') {
       const now = await page.observe(tabId, OBSERVE);
       if (marker(now) !== marker(snap)) { snap = now; stale++; continue; } // decided on an old page
+      if (decision.choice === 'DONE' && !nudgedSubmit) {
+        // Typed text that was never submitted is the most common false finish: send it back once.
+        const lastFill = history.map((h) => h.kind).lastIndexOf('fill');
+        if (lastFill >= 0 && !history.slice(lastFill + 1).some((h) => ['click', 'enter', 'key', 'open', 'back'].includes(h.kind))) {
+          nudgedSubmit = true;
+          emit({ type: 'status', text: `Not finished yet: "${history[lastFill].action}" was typed but never submitted.` });
+          checks.push({ action: `DONE was rejected: the text typed into "${history[lastFill].action}" was never submitted. CLICK its Search/Submit button or PRESS_ENTER in it.`, kind: 'check', text: null, page_changed: false });
+          continue;
+        }
+      }
       if (decision.choice === 'DONE') {
         // DONE is a claim: ask once more whether every part of the goal is visibly met.
-        const check = await verifyDone({ snap, goal, history: [...history, ...checks], settings, decisionCfg, signal });
+        const check = await verifyDone({ snap: view, goal, history: [...history, ...checks], settings, decisionCfg, signal });
         decisions++;
         if (!check.done) {
           emit({ type: 'status', text: 'Not finished yet: a check found part of the goal still open.' });
-          if (checks.length >= 1) return finish('blocked', 'The model said DONE twice, but a check found part of the goal is still not met on this page.', snap);
+          if (++rejectedDone >= 2) return finish('blocked', 'The model said DONE twice, but a check found part of the goal is still not met on this page.', snap);
           checks.push({ action: 'DONE was rejected: part of the goal is not met yet. Choose the operation that completes it.', kind: 'check', text: null, page_changed: false });
           continue;
         }
@@ -180,9 +202,12 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
     }
 
     if (signal.aborted) return finish('stopped', null, snap);
+    // A link or button may open a new tab: the run follows it there.
+    const newTabs = page.watchNewTabs(tabId);
     try {
       await act(tabId, action, snap, text);
     } catch (e) {
+      await newTabs.stop();
       if (e instanceof cdp.DialogError) return finish('blocked', e.message, snap);
       if (!(e instanceof StaleError)) throw e;
       stale++;
@@ -199,11 +224,21 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
     try {
       next = await observeAfter(tabId, action);
     } catch (e) {
+      await newTabs.stop();
       if (e instanceof cdp.DialogError) return finish('blocked', `After "${action.label}": ${e.message}`, snap);
       throw e;
     }
-    entry.page_changed = marker(next) !== marker(snap);
-    if (entry.page_changed) checks.length = 0;
+    const opened = (await newTabs.stop(action.newTab ? 400 : 0)).filter((t) => !page.isRestricted(t.pendingUrl || t.url || ''));
+    if (opened.length) {
+      tabId = opened[opened.length - 1].id;
+      await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+      page.setCurrentTab(tabId);
+      await page.waitForLoad(tabId, 15000).catch(() => {});
+      next = await page.observe(tabId, OBSERVE);
+      emit({ type: 'status', text: `Followed the new tab: ${next.title || next.url}` });
+    }
+    entry.page_changed = opened.length > 0 || marker(next) !== marker(snap);
+    if (entry.page_changed) { checks.length = 0; rejectedDone = 0; }
     snap = next;
     emit({ type: 'action', ...entry, elapsedMs: elapsed() });
 
