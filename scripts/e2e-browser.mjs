@@ -598,6 +598,31 @@ try {
   await panel.click('#history [data-close]');
   step('history lists saved chats and research reports');
 
+  // ---- A side-panel run never takes over a tab a coding agent is using ----
+  const agentOpened = await call('tabs_create', { url: `${base}/?agent` });
+  const agentTabId = Number(/Tab (\d+)/.exec(agentOpened.text)[1]);
+  await call('read_page');
+  await call('tabs_select', { tabId: agentTabId, activate: true }); // the user is looking at the agent's tab
+  const before = await sw.evaluate(() => chrome.tabs.query({}).then((ts) => ts.map((t) => t.id)));
+  await panel.evaluate(() => document.querySelector('[data-mode="ultrafast"]').click());
+  await panel.waitForSelector('#composer:not([hidden]) #send:not([hidden])');
+  await panel.type('#input', `Open ${base}/?mine and search for Rome`);
+  await panel.keyboard.press('Enter');
+  // The panel tab is in the background now (the user looks at the agent's tab): poll by time, not animation frames.
+  await panel.waitForFunction(() => /is using the tab you're on, so this run works in a new tab/.test(document.querySelector('#feed').textContent), { timeout: 20000, polling: 200 });
+  await waitFor(async () => (await sw.evaluate(() => chrome.tabs.query({}).then((ts) => ts.some((t) => /\?mine/.test(t.url || t.pendingUrl || ''))))), 'own tab loads');
+  await panel.evaluate(() => document.querySelector('#stop:not([hidden])')?.click());
+  await panel.waitForFunction(() => !document.querySelector('#stop:not([hidden])'), { timeout: 20000, polling: 200 });
+  const after = await sw.evaluate(() => chrome.tabs.query({}).then((ts) => ts.map((t) => ({ id: t.id, url: t.url }))));
+  const ownTabs = after.filter((t) => !before.includes(t.id));
+  assert.equal(ownTabs.length, 1, 'the panel run opened its own tab');
+  assert.match(ownTabs[0].url, /\?mine/);
+  assert.match((await sw.evaluate((id) => chrome.tabs.get(id).then((t) => t.url), agentTabId)), /\?agent$/, "the agent's tab was not touched");
+  // ...and the coding agent's next call still lands on its own tab.
+  assert.match((await call('tabs_context')).text, new RegExp(`Current agent tab: ${agentTabId}`));
+  await panel.evaluate(() => document.querySelector('[data-mode="normal"]').click());
+  step("side-panel run used its own tab while a coding agent held the user's tab; the agent kept its tab");
+
   console.log('\nE2E PASSED');
 } finally {
   await client?.close().catch(() => {});

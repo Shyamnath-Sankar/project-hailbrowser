@@ -13,6 +13,8 @@ const OBSERVE = { viewportOnly: true, maxElements: 400, maxText: 6000 };
 const FRESHNESS = { ...OBSERVE, light: true }; // same elements and form values, no context/text extras
 const LOW_CONFIDENCE = 0.55; // below this the chat model takes the step
 const MAX_ESCALATIONS = 6;
+// Goals limited to the current page never fall back to a web search.
+const LOCAL_SCOPE = /\b(this|current|the same) (page|site|tab|article)\b|\bon here\b|\bhere on\b/i;
 const ANSWER_TEXT = 12000; // characters of the final page given to the answer step
 // Goals that ask for information back, when no chat model is there to say so.
 // A false positive only costs one answer read: an answer that isn't found never causes extra actions.
@@ -92,7 +94,7 @@ async function act(tabId, action, snap, text) {
  * Run a goal. emit(event) receives progress events for the side panel.
  * Returns {status: 'done'|'blocked'|'stopped'|'error', summary, history, elapsedMs}.
  */
-export async function runUltrafast({ goal: task, values = null, tabId, settings, signal, emit }) {
+export async function runUltrafast({ goal: task, values = null, tabId, settings, signal, emit, lane = 'agent' }) {
   const uf = settings.ultrafast;
   // Caller-provided values (e.g. from OpenCode/Claude Code) are part of the goal for every decision.
   const goal = values ? `${task}\n\nValues to use: ${JSON.stringify(values)}` : task;
@@ -257,6 +259,18 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
           continue;
         }
       }
+      if (decision.choice === 'BLOCKED' && !sites.length && !LOCAL_SCOPE.test(task) && !history.some((h) => h.kind === 'search')) {
+        // Nothing here for the goal and no site named: search the web for it (the query is the user's
+        // own goal text, never page text) and carry on from the results, instead of giving up.
+        emit({ type: 'status', text: 'Nothing for this on the current page: searching the web for your goal.' });
+        await page.searchFromBlocked(tabId, task.slice(0, 300), `https://duckduckgo.com/?q=${encodeURIComponent(task.slice(0, 300))}`);
+        const entry = { step: history.length + 1, action: 'Search the web for the goal', kind: 'search', operation: 'SEARCH_WEB', text: null, page_changed: true, url: snap.url };
+        history.push(entry);
+        emit({ type: 'action', ...entry, elapsedMs: elapsed() });
+        checks.length = 0;
+        snap = await page.observe(tabId, OBSERVE);
+        continue;
+      }
       return finish(decision.choice === 'DONE' ? 'done' : 'blocked', decision.reason, snap);
     }
 
@@ -343,7 +357,7 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
     if (opened.length) {
       tabId = opened[opened.length - 1].id;
       await chrome.tabs.update(tabId, { active: true }).catch(() => {});
-      page.setCurrentTab(tabId);
+      page.setCurrentTab(tabId, { lane });
       await page.waitForLoad(tabId, 15000).catch(() => {});
       next = await page.observe(tabId, OBSERVE);
       emit({ type: 'status', text: `Followed the new tab: ${next.title || next.url}` });

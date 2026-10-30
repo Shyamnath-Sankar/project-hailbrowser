@@ -92,8 +92,8 @@ export async function runTask({ task, settings, signal, emit, save, systemExtra 
 
   // A task keeps working in its own tab, even after a restart or when the user switched tabs.
   const own = task.tabId != null ? await chrome.tabs.get(task.tabId).catch(() => null) : null;
-  const tab = own || await page.resolveTab();
-  page.setCurrentTab(tab.id);
+  const tab = own || await page.resolveTab(null, 'panel');
+  page.setCurrentTab(tab.id, { lane: 'panel' });
   task.tabId = tab.id;
 
   if (!task.subtasks.length) {
@@ -142,7 +142,7 @@ export async function runTask({ task, settings, signal, emit, save, systemExtra 
     }
 
     current.status = 'active';
-    if (page.currentTab() != null) task.tabId = page.currentTab(); // follows tabs the agent opened
+    if (page.currentTab('panel') != null) task.tabId = page.currentTab('panel'); // follows tabs the agent opened
     current.attempts++;
     log(`Started: ${current.title}`);
     await update({});
@@ -160,14 +160,14 @@ export async function runTask({ task, settings, signal, emit, save, systemExtra 
     // A model or network error is a failed attempt (retried, then the user is asked), never the end of a long task.
     try {
       if (task.mode === 'ultrafast') {
-        const r = await runUltrafast({ goal: `${current.title}. ${current.detail}\n(Part of: ${task.goal})`, tabId: (await page.resolveTab()).id, settings, signal, emit });
+        const r = await runUltrafast({ goal: `${current.title}. ${current.detail}\n(Part of: ${task.goal})`, tabId: (await page.resolveTab(null, 'panel')).id, settings, signal, emit, lane: 'panel' });
         task.steps += r.history?.length || 0;
         outcome = r.status === 'done' ? { kind: 'complete', summary: r.finalTitle ? `Ended on ${r.finalTitle}` : '' }
           : r.status === 'stopped' ? { kind: 'stopped' } : { kind: 'retry', issue: r.summary.split('\n')[1] || r.status };
       } else {
         let result = null;
         const r = await runNormal({
-          goal: brief, messages: [], settings, signal, emit,
+          goal: brief, messages: [], settings, signal, emit, lane: 'panel',
           system: `${NORMAL_SYSTEM}\n\n${TASK_RULES}${systemExtra}`,
           extraTools: TASK_TOOLS,
           maxSteps: settings.tasks?.stepsPerSubtask || 40,

@@ -2,23 +2,25 @@
 import * as cdp from './cdp.js';
 import * as inj from './inject.js';
 
-let currentTabId = null;
+// Each driver has its own "current tab" (lane), so they never take over each other's tab:
+// "agent" = coding agents over MCP, "panel" = runs started in the side panel (Chat, Fast, tasks, schedules).
+const currentTabs = new Map();
 let currentTabListener = null;
 const shotScale = new Map(); // tabId -> CSS px per screenshot px
 
-// The agent's tab survives service-worker restarts (session storage lasts until Chrome closes).
+// The coding agent's tab survives service-worker restarts (session storage lasts until Chrome closes).
 const restored = globalThis.chrome?.storage?.session
-  ? chrome.storage.session.get('hailCurrentTab').then(({ hailCurrentTab }) => { if (currentTabId == null && hailCurrentTab != null) currentTabId = hailCurrentTab; }).catch(() => {})
+  ? chrome.storage.session.get('hailCurrentTab').then(({ hailCurrentTab }) => { if (!currentTabs.has('agent') && hailCurrentTab != null) currentTabs.set('agent', hailCurrentTab); }).catch(() => {})
   : Promise.resolve();
 
-export function setCurrentTab(tabId, { quiet = false } = {}) {
-  currentTabId = tabId;
-  chrome.storage?.session?.set({ hailCurrentTab: tabId }).catch(() => {});
+export function setCurrentTab(tabId, { quiet = false, lane = 'agent' } = {}) {
+  currentTabs.set(lane, tabId);
+  if (lane === 'agent') chrome.storage?.session?.set({ hailCurrentTab: tabId }).catch(() => {});
   if (!quiet) currentTabListener?.(tabId);
 }
 
-export function currentTab() {
-  return currentTabId;
+export function currentTab(lane = 'agent') {
+  return currentTabs.get(lane) ?? null;
 }
 
 /** Called whenever an agent switches to, opens or navigates a tab. */
@@ -34,16 +36,17 @@ export function isRestricted(url) {
 
 const ownPage = (t) => (t?.url || t?.pendingUrl || '').startsWith(`chrome-extension://${globalThis.chrome?.runtime?.id}/`);
 
-/** The tab to act on: explicit id, then the agent's current tab, then the active tab (never HailBrowser's own pages). */
-export async function resolveTab(tabId) {
+/** The tab to act on: explicit id, then the lane's current tab, then the active tab (never HailBrowser's own pages). */
+export async function resolveTab(tabId, lane = 'agent') {
   await restored;
   if (tabId != null) {
     const tab = await chrome.tabs.get(Number(tabId)).catch(() => null);
     if (!tab) throw new Error(`No tab with id ${tabId}. Call tabs_context to list tabs.`);
     return tab;
   }
-  if (currentTabId != null) {
-    const tab = await chrome.tabs.get(currentTabId).catch(() => null);
+  const current = currentTabs.get(lane || 'agent');
+  if (current != null) {
+    const tab = await chrome.tabs.get(current).catch(() => null);
     if (tab && !ownPage(tab)) return tab;
   }
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true, windowType: 'normal' });

@@ -14,6 +14,7 @@ import path from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
 
 const EXTENSION_WAIT_MS = 10000;
+const STALE_EXTENSION_MS = 45000; // the extension pings every 20 s
 
 export function defaultTrustFile() {
   return process.env.HAILBROWSER_TRUST_FILE || path.join(os.homedir(), '.hailbrowser', 'trusted-extension.json');
@@ -112,7 +113,19 @@ export class Hub {
         }
         this.log(`hub: trusting extension ${id} from now on`);
       }
-      if (this.extension && this.extension !== ws) this.extension.close(1000, 'replaced');
+      // Another Chrome (a second profile, or a test browser with the same unpacked extension) must not
+      // take over a live connection mid-session: keep the first browser while it is alive (it pings
+      // every 20 s). A connection silent for 45 s is treated as dead and replaced.
+      if (this.extension && this.extension !== ws) {
+        if (this.extension.readyState === WebSocket.OPEN && Date.now() - this.extensionSeen < STALE_EXTENSION_MS) {
+          if (!this.warnedBusy) this.log('hub: another browser tried to connect; keeping the one already connected');
+          this.warnedBusy = true;
+          return ws.close(1013, 'another browser is already connected');
+        }
+        this.extension.close(1000, 'replaced');
+      }
+      this.warnedBusy = false;
+      this.extensionSeen = Date.now();
       this.extension = ws;
       this.log('hub: extension connected');
       for (const w of this.extensionWaiters) w();
@@ -129,6 +142,7 @@ export class Hub {
   }
 
   onExtensionMessage(data) {
+    this.extensionSeen = Date.now();
     let msg;
     try { msg = JSON.parse(data); } catch { return; }
     if (msg.type === 'ping') return this.extension?.send(JSON.stringify({ type: 'pong' }));

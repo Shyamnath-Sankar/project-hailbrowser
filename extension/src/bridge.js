@@ -21,6 +21,7 @@ export class Bridge {
     this.enabled = enabled;
     this.port = port;
     if (changed) {
+      this.retryMs = 1000; // a new port or a fresh enable should connect right away
       this.close();
       if (enabled) this.connect();
     }
@@ -45,7 +46,10 @@ export class Bridge {
     } finally {
       this.probing = false;
     }
-    if (!this.enabled || this.ws || port !== this.port) return;
+    if (!this.enabled || this.ws) return;
+    // The port changed while probing (configure() could not start a new attempt then): try it now,
+    // instead of waiting for the keep-alive alarm.
+    if (port !== this.port) return this.connect();
     let ws;
     try {
       ws = new WebSocket(`ws://127.0.0.1:${this.port}/?role=extension`);

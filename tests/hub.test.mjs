@@ -134,3 +134,24 @@ test('timeouts and aborts tell the extension to cancel, also through peers', asy
   await peer.close();
   await host.close();
 });
+
+test('a second browser cannot take over a live extension connection', async () => {
+  const port = PORT + 9;
+  const host = new Hub({ port, client: 'opencode', trustFile: null });
+  await host.start();
+  const first = await fakeExtension(port);
+  await new Promise((r) => setTimeout(r, 50));
+  // Same extension id from another Chrome (second profile, a test browser): refused while the first is alive.
+  const second = await fakeExtension(port);
+  const code = await new Promise((r) => second.once('close', (c) => r(c)));
+  assert.equal(code, 1013);
+  const r = await host.call('read_page', {});
+  assert.equal(r.content[0].text, 'read_page:{}:opencode', 'calls still reach the first browser');
+  // Once the first one is gone, another browser may connect.
+  first.close();
+  await new Promise((r) => setTimeout(r, 50));
+  const third = await fakeExtension(port);
+  assert.equal((await host.call('find', {})).content[0].text, 'find:{}:opencode');
+  third.close();
+  await host.close();
+});

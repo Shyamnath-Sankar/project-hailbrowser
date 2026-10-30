@@ -41,12 +41,12 @@ export function pruneContext(messages) {
  * returns {text, stop?} — a truthy stop ends the loop with stopReason = stop.
  * Returns {status, summary, stopReason, stopArgs, steps}.
  */
-export async function runNormal({ goal, messages, settings, signal, emit, tabId, system = NORMAL_SYSTEM, extraTools = [], onExtraTool, maxSteps, onStep }) {
+export async function runNormal({ goal, messages, settings, signal, emit, tabId, system = NORMAL_SYSTEM, extraTools = [], onExtraTool, maxSteps, onStep, lane = 'agent' }) {
   const cfg = providerConfig(settings, settings.normal.provider);
   const tools = [...agentTools(settings), ...extraTools];
   const extraNames = new Set(extraTools.map((t) => t.name));
   const limit = maxSteps || settings.normal.maxSteps;
-  const tab = await resolveTab(tabId).catch(() => null);
+  const tab = await resolveTab(tabId, lane).catch(() => null);
   const context = `${tab ? `\n\n[Current tab ${tab.id}: ${tab.title} — ${tab.url}]` : '\n'}\n[Now: ${localNow()}]`;
   // A previous turn interrupted mid-tool-call leaves calls without results; close them out.
   const last = messages[messages.length - 1];
@@ -86,7 +86,7 @@ export async function runNormal({ goal, messages, settings, signal, emit, tabId,
       }
       emit({ type: 'tool', name: call.name, args: call.args });
       const started = performance.now();
-      const res = await executeTool(call.name, call.args, { settings });
+      const res = await executeTool(call.name, call.args, { settings, lane });
       emit({
         type: 'tool_result', name: call.name, isError: !!res.isError, latencyMs: Math.round(performance.now() - started),
         text: res.content.filter((p) => p.type === 'text').map((p) => p.text).join('\n').slice(0, 600),

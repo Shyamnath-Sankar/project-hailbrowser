@@ -128,7 +128,7 @@ async function executeTask(id, { unattended = false } = {}) {
   const emit = (event) => broadcast({ type: 'event', source: 'task', taskId: id, event });
   try {
     driver = unattended ? 'Scheduled task' : 'Tasks';
-    const tab = (task.tabId != null && await chrome.tabs.get(task.tabId).catch(() => null)) || await page.resolveTab();
+    const tab = (task.tabId != null && await chrome.tabs.get(task.tabId).catch(() => null)) || await page.resolveTab(null, 'panel');
     pulseIndicator(tab.id, 'HailBrowser is working on your task', 0);
     const systemExtra = memorySection(settings, tab.url) + (unattended || task.scheduleId ? `\n${TASK_UNATTENDED}` : '');
     await runTask({ task, settings, signal: controller.signal, emit, save: saveTask, systemExtra });
@@ -186,6 +186,28 @@ async function handleTaskMessage(msg, port) {
 }
 
 const START_URL = 'https://duckduckgo.com/';
+
+// A coding agent counts as "on" a tab if it holds it, or it is the agent's current tab and the agent
+// made a call recently (it may be thinking between calls). Side-panel runs never drive such a tab.
+const AGENT_RECENT_MS = 10 * 60000;
+const PANEL_DRIVERS = new Set(['Fast', 'Chat', 'Tasks', 'Scheduled', 'Scheduled task', 'HailBrowser']);
+let lastAgentCall = { at: 0, who: null };
+
+/** The tab the user is looking at in the side panel's window (falls back to the last focused window). */
+async function userTab(windowId) {
+  const [tab] = windowId != null
+    ? await chrome.tabs.query({ active: true, windowId }).catch(() => [])
+    : await chrome.tabs.query({ active: true, lastFocusedWindow: true, windowType: 'normal' });
+  return tab && !(tab.url || '').startsWith(`chrome-extension://${chrome.runtime.id}/`) ? tab : page.resolveTab(null, 'panel');
+}
+
+/** Name of the coding agent using this tab, or null. */
+async function agentOnTab(tabId) {
+  const held = (await groups.list()).find((t) => t.id === tabId && !PANEL_DRIVERS.has(t.who));
+  if (held) return held.who;
+  if (page.currentTab('agent') === tabId && Date.now() - lastAgentCall.at < AGENT_RECENT_MS) return lastAgentCall.who || 'A coding agent';
+  return null;
+}
 
 function describeRun() {
   if (!run) return 'nothing';
@@ -391,7 +413,7 @@ function clearIndicator() {
 
 // ---------- chat & fast runs ----------
 
-async function startRun({ goal, mode, url, tabId, source, values, signal, who }) {
+async function startRun({ goal, mode, url, tabId, source, values, signal, who, windowId = null }) {
   await ready;
   if (run) throw new Error(`HailBrowser is already running ${describeRun()}. Stop it first.`);
   const settings = await getSettings();
@@ -409,18 +431,27 @@ async function startRun({ goal, mode, url, tabId, source, values, signal, who })
     if (inChat) { pushEvent(chat, event); saveChatSoon(); }
     broadcast({ type: 'event', source, event });
   };
+  // Coding agents (MCP) and the user's own runs keep separate current tabs: neither takes over the other's.
+  const lane = source === 'mcp' ? 'agent' : 'panel';
   try {
-    const tab = await page.resolveTab(tabId);
-    page.setCurrentTab(tab.id);
+    let tab = tabId == null && lane === 'panel' ? await userTab(windowId) : await page.resolveTab(tabId, lane);
+    let sharedWith = null;
+    if (tabId == null && lane === 'panel') {
+      sharedWith = await agentOnTab(tab.id);
+      // Never drive a tab a coding agent is using: work in a new tab next to it instead.
+      if (sharedWith) tab = await chrome.tabs.create({ windowId: tab.windowId, index: tab.index + 1, active: true, url: 'about:blank' });
+    }
+    page.setCurrentTab(tab.id, { lane });
     // Chrome blocks extensions on new-tab and chrome:// pages: open the site the goal names,
     // or else search the goal with the default search engine, so the run has a page to work on.
-    const blocked = !url && /^(chrome|edge|about|devtools|chrome-extension|chrome-search):/i.test(tab.url || '');
+    const blocked = !url && /^(chrome|edge|about|devtools|chrome-extension|chrome-search):/i.test(tab.url || tab.pendingUrl || '');
     const site = blocked ? sitesFromGoal(goal)[0] : null;
     if (url) await page.navigate(tab.id, url);
     else if (site) await page.navigate(tab.id, site.url);
     else if (blocked) await page.searchFromBlocked(tab.id, goal, START_URL);
     pulseIndicator(tab.id, mode === 'ultrafast' ? 'HailBrowser Ultrafast is working' : 'HailBrowser is working', 0);
     emit({ type: 'user', text: goal, mode });
+    if (sharedWith) emit({ type: 'status', text: `${sharedWith} is using the tab you're on, so this run works in a new tab.` });
     if (blocked) {
       emit({ type: 'status', text: site ? `Started on ${site.label.replace(/^Open /, '')} (this tab was a Chrome page extensions cannot use).`
         : 'This tab was a Chrome page extensions cannot use, so I searched for your goal first.' });
@@ -428,7 +459,7 @@ async function startRun({ goal, mode, url, tabId, source, values, signal, who })
     if (inChat && !chat.title) chat.title = chatTitle(goal);
     let result;
     if (mode === 'ultrafast') {
-      result = await runUltrafast({ goal, values, tabId: tab.id, settings, signal: controller.signal, emit });
+      result = await runUltrafast({ goal, values, tabId: tab.id, settings, signal: controller.signal, emit, lane });
     } else {
       // External agents get no memory: it holds the user's personal facts.
       let system = NORMAL_SYSTEM;
@@ -436,7 +467,7 @@ async function startRun({ goal, mode, url, tabId, source, values, signal, who })
       if (source === 'schedule') system += `\n\n${UNATTENDED_RULES}`;
       if (source !== 'mcp') system += memorySection(settings, tab.url);
       result = await runNormal({
-        goal: withValues(goal, values), messages: inChat ? chat.messages : [], settings, signal: controller.signal, emit, tabId: tab.id, system,
+        goal: withValues(goal, values), messages: inChat ? chat.messages : [], settings, signal: controller.signal, emit, tabId: tab.id, system, lane,
         ...(inChat ? chatTools(settings, goal, emit) : {}),
       });
       emit({ type: 'finish', status: result.status, summary: null });
@@ -639,7 +670,7 @@ async function runSchedule({ id, manual, at }) {
   s.lastRun = entry;
   await saveSchedule(s);
   await recordRun(entry);
-  const prevTab = page.currentTab();
+  const prevTab = page.currentTab('panel');
   let tab = null;
   try {
     if (s.mode === 'research') {
@@ -649,7 +680,7 @@ async function runSchedule({ id, manual, at }) {
       entry.summary = r.status === 'done' ? firstLine(r.answer) : r.error || r.status;
     } else if (s.mode === 'tasks') {
       tab = await openJobTab(s.url);
-      page.setCurrentTab(tab.id);
+      page.setCurrentTab(tab.id, { lane: 'panel' });
       const t = newTask(s.goal, 'normal', { scheduleId: s.id, title: s.title });
       await saveTask(t);
       entry.taskId = t.id;
@@ -667,7 +698,7 @@ async function runSchedule({ id, manual, at }) {
     entry.status = 'failed';
     entry.summary = e?.message || String(e);
   } finally {
-    if (prevTab != null && prevTab !== tab?.id) page.setCurrentTab(prevTab, { quiet: true });
+    if (prevTab != null && prevTab !== tab?.id) page.setCurrentTab(prevTab, { quiet: true, lane: 'panel' });
   }
   // Successful jobs clean up their tab; anything else is left open to look at.
   if (tab && entry.status === 'done') await chrome.tabs.remove(tab.id).catch(() => {});
@@ -731,6 +762,7 @@ async function handleExternalCall(tool, args, client, signal) {
     return { isError: true, content: [{ type: 'text', text: 'The user pressed Stop in the browser. Do not continue using the browser; ask the user how to proceed.' }] };
   }
   const who = groups.agentName(client);
+  lastAgentCall = { at: Date.now(), who };
   releaseLater(who, CONTROL_IDLE_MS);
   const entry = { tool, args: summarizeArgs(args), client: client || 'mcp', at: Date.now() };
   activity.push(entry);
@@ -814,7 +846,7 @@ async function handlePanelMessage(msg, port) {
   if (t.startsWith('schedule_') || t === 'runs_clear') return handleScheduleMessage(msg, port);
   if (t === 'run') {
     if (msg.use === 'research' || msg.use === 'task') return startInChat(msg.use, { goal: msg.goal, mode: msg.mode, depth: msg.depth });
-    return startRun({ goal: msg.goal, mode: msg.mode, source: 'panel' });
+    return startRun({ goal: msg.goal, mode: msg.mode, source: 'panel', windowId: Number.isInteger(msg.windowId) ? msg.windowId : null });
   }
   if (t === 'stop') return run?.controller.abort();
   if (t === 'release') return groups.release(msg.tabId);

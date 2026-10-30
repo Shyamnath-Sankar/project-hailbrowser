@@ -62,23 +62,23 @@ async function newTabNotes(watch) {
 }
 
 const HANDLERS = {
-  async tabs_context() {
-    const current = await page.resolveTab().catch(() => null);
+  async tabs_context(args, ctx) {
+    const current = await page.resolveTab(null, ctx?.lane).catch(() => null);
     const tabs = await chrome.tabs.query({ windowType: 'normal' });
     const lines = tabs.map((t) => `${t.id === current?.id ? '→' : ' '} [${t.id}] ${t.active ? '(active) ' : ''}${page.shorten(t.title || '(untitled)', 120)} — ${page.shorten(t.url || t.pendingUrl || '', 200)}`);
     return text(`Current agent tab: ${current ? current.id : 'none'}\n${lines.join('\n')}`);
   },
 
-  async tabs_create({ url, activate }) {
+  async tabs_create({ url, activate }, ctx) {
     const tab = await chrome.tabs.create({ url: 'about:blank', active: !!activate });
-    page.setCurrentTab(tab.id);
+    page.setCurrentTab(tab.id, { lane: ctx?.lane });
     if (url) await page.navigate(tab.id, url);
     return text(`Opened and selected ${await describeTab(await chrome.tabs.get(tab.id))}`);
   },
 
-  async tabs_select({ tabId, activate }) {
-    const tab = await page.resolveTab(tabId);
-    page.setCurrentTab(tab.id);
+  async tabs_select({ tabId, activate }, ctx) {
+    const tab = await page.resolveTab(tabId, ctx?.lane);
+    page.setCurrentTab(tab.id, { lane: ctx?.lane });
     if (activate) {
       await chrome.tabs.update(tab.id, { active: true });
       await chrome.windows.update(tab.windowId, { focused: true });
@@ -86,30 +86,30 @@ const HANDLERS = {
     return text(`Selected ${await describeTab(tab)}`);
   },
 
-  async tabs_close({ tabId }) {
-    const tab = await page.resolveTab(tabId);
+  async tabs_close({ tabId }, ctx) {
+    const tab = await page.resolveTab(tabId, ctx?.lane);
     await cdp.detach(tab.id);
     await chrome.tabs.remove(tab.id);
     return text(`Closed tab ${tab.id}`);
   },
 
-  async navigate({ url, tabId }) {
-    const tab = await page.resolveTab(tabId);
-    page.setCurrentTab(tab.id);
+  async navigate({ url, tabId }, ctx) {
+    const tab = await page.resolveTab(tabId, ctx?.lane);
+    page.setCurrentTab(tab.id, { lane: ctx?.lane });
     const done = await page.navigate(tab.id, url);
     return text(`Loaded ${await describeTab(done)}`);
   },
 
-  async read_page({ tabId, viewportOnly = false, maxElements = 300, compact = false }) {
-    const tab = await page.resolveTab(tabId);
+  async read_page({ tabId, viewportOnly = false, maxElements = 300, compact = false }, ctx) {
+    const tab = await page.resolveTab(tabId, ctx?.lane);
     const snap = await page.observe(tab.id, compact
       ? { viewportOnly: true, maxElements: Math.min(maxElements, 150), maxText: 1500 }
       : { viewportOnly, maxElements, maxText: 4000 });
     return text(formatSnapshot(snap));
   },
 
-  async find({ query, tabId }) {
-    const tab = await page.resolveTab(tabId);
+  async find({ query, tabId }, ctx) {
+    const tab = await page.resolveTab(tabId, ctx?.lane);
     const snap = await page.observe(tab.id, { maxElements: 2000, maxText: 0 });
     const q = String(query).toLowerCase();
     const hits = snap.elements.filter((el) => [el.role, el.label, el.value, el.placeholder, el.href].some((v) => v && String(v).toLowerCase().includes(q)));
@@ -117,21 +117,21 @@ const HANDLERS = {
     return text(hits.slice(0, 25).map(formatElement).join('\n') + (hits.length > 25 ? `\n…${hits.length - 25} more` : ''));
   },
 
-  async get_page_text({ tabId, maxChars = 20000 }) {
-    const tab = await page.resolveTab(tabId);
+  async get_page_text({ tabId, maxChars = 20000 }, ctx) {
+    const tab = await page.resolveTab(tabId, ctx?.lane);
     const res = await page.run(tab.id, inj.pageText, maxChars);
     return text(`${res.title} — ${res.url}\n\n${res.text}${res.truncated ? `\n\n[truncated: ${res.total} chars total]` : ''}`);
   },
 
-  async screenshot({ tabId }) {
-    const tab = await page.resolveTab(tabId);
+  async screenshot({ tabId }, ctx) {
+    const tab = await page.resolveTab(tabId, ctx?.lane);
     const shot = await page.screenshot(tab.id);
     return { content: [{ type: 'image', data: shot.data, mimeType: shot.mimeType },
       { type: 'text', text: `Screenshot ${shot.width}x${shot.height} of ${tab.url}` }] };
   },
 
-  async click({ ref, x, y, tabId, button = 'left', clickCount = 1, modifiers }) {
-    const tab = await page.resolveTab(tabId);
+  async click({ ref, x, y, tabId, button = 'left', clickCount = 1, modifiers }, ctx) {
+    const tab = await page.resolveTab(tabId, ctx?.lane);
     if (!['left', 'right', 'middle'].includes(button)) throw new Error('button must be "left", "right" or "middle".');
     const { x: px, y: py } = await pointArg(tab, { ref, x, y }, 'click');
     const watch = page.watchNewTabs(tab.id);
@@ -141,9 +141,9 @@ const HANDLERS = {
     return text(`Clicked ${ref != null ? ref : `(${Math.round(px)}, ${Math.round(py)})`}. Page: ${page.shorten(now.title, 120)} — ${page.shorten(now.url, 300)}${await newTabNotes(watch)}`);
   },
 
-  async type({ text: value, ref, tabId, clear, submit }) {
+  async type({ text: value, ref, tabId, clear, submit }, ctx) {
     if (typeof value !== 'string') throw new Error('type needs text (a string).');
-    const tab = await page.resolveTab(tabId);
+    const tab = await page.resolveTab(tabId, ctx?.lane);
     let info = null, id = null, where = '', note = '';
     if (ref != null) {
       id = parseRef(ref);
@@ -184,9 +184,9 @@ const HANDLERS = {
     return text(`Typed ${JSON.stringify(value.length > 80 ? value.slice(0, 80) + '…' : value)}${where}${submit ? ' and pressed Enter' : ''}.${note}`);
   },
 
-  async press_key({ keys, tabId, repeat = 1 }) {
+  async press_key({ keys, tabId, repeat = 1 }, ctx) {
     if (typeof keys !== 'string' || !keys.trim()) throw new Error('press_key needs keys, e.g. "Enter" or "ctrl+a Backspace".');
-    const tab = await page.resolveTab(tabId);
+    const tab = await page.resolveTab(tabId, ctx?.lane);
     const chords = keys.split(/\s+/).filter(Boolean);
     for (const chord of chords) cdp.parseChord(chord); // validate everything before pressing anything
     const watch = page.watchNewTabs(tab.id);
@@ -201,11 +201,11 @@ const HANDLERS = {
     return text(`Pressed ${keys}${repeat > 1 ? ` ×${repeat}` : ''}.${now.url !== tab.url ? ` Page: ${page.shorten(now.title, 120)} — ${page.shorten(now.url, 300)}` : ''}${await newTabNotes(watch)}`);
   },
 
-  async scroll({ direction, amount = 5, ref, x, y, tabId }) {
+  async scroll({ direction, amount = 5, ref, x, y, tabId }, ctx) {
     const DIRS = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
     if (!DIRS[direction]) throw new Error('direction must be "up", "down", "left" or "right".');
     if (amount != null && (!isNum(amount) || amount <= 0)) throw new Error('amount must be a positive number of wheel ticks.');
-    const tab = await page.resolveTab(tabId);
+    const tab = await page.resolveTab(tabId, ctx?.lane);
     const d = 120 * Math.min(amount ?? 5, 50);
     const [dx, dy] = DIRS[direction].map((v) => v * d);
     let point = null;
@@ -232,27 +232,27 @@ const HANDLERS = {
     return text(`Scrolled ${direction} ${where}: now at ${pos}.`);
   },
 
-  async select_option({ ref, option, options, tabId }) {
+  async select_option({ ref, option, options, tabId }, ctx) {
     if (ref == null) throw new Error('select_option needs the ref of a <select>.');
     const want = Array.isArray(options) && options.length ? options.map(String) : option;
     if (want == null || want === '') throw new Error('Give option (one value or label) or options (a list, for multi-selects).');
-    const tab = await page.resolveTab(tabId);
+    const tab = await page.resolveTab(tabId, ctx?.lane);
     const res = await page.run(tab.id, inj.selectOptionNode, parseRef(ref), want);
     if (res?.error === 'stale') throw new page.StaleError('That element no longer exists. Read the page again for fresh refs.');
     if (res?.error) throw new Error(res.error + (res.options ? `. Options: ${res.options.join(' | ')}` : ''));
     return text(`Selected ${res.selected.map((l) => `"${l}"`).join(', ') || 'nothing'}.`);
   },
 
-  async hover({ ref, x, y, tabId }) {
-    const tab = await page.resolveTab(tabId);
+  async hover({ ref, x, y, tabId }, ctx) {
+    const tab = await page.resolveTab(tabId, ctx?.lane);
     const { x: px, y: py } = await pointArg(tab, { ref, x, y }, 'hover');
     await cdp.mouseMove(tab.id, px, py);
     await page.sleep(200);
     return text(`Hovered ${ref != null ? ref : `(${Math.round(px)}, ${Math.round(py)})`}.`);
   },
 
-  async handle_dialog({ accept = true, text: promptText, tabId }) {
-    const tab = await page.resolveTab(tabId);
+  async handle_dialog({ accept = true, text: promptText, tabId }, ctx) {
+    const tab = await page.resolveTab(tabId, ctx?.lane);
     const d = await cdp.handleDialog(tab.id, accept !== false, promptText);
     if (!d) return text('No dialog is open on this tab.');
     const now = accept !== false && d.type === 'beforeunload' ? await page.settleAfterInput(tab.id, tab.url, 800) : tab;
@@ -260,14 +260,14 @@ const HANDLERS = {
       (now.url !== tab.url ? ` Page: ${page.shorten(now.title, 120)} — ${page.shorten(now.url, 300)}` : ''));
   },
 
-  async wait({ seconds }) {
+  async wait({ seconds }, ctx) {
     await page.sleep(Math.min(Math.max(Number(seconds) || 1, 0), 10) * 1000);
     return text(`Waited ${seconds}s.`);
   },
 
   async javascript({ code, tabId }, ctx) {
     if (!ctx.settings.tools.allowJavascript) throw new Error('The javascript tool is disabled in HailBrowser settings.');
-    const tab = await page.resolveTab(tabId);
+    const tab = await page.resolveTab(tabId, ctx?.lane);
     const evaluate = (expression, replMode) => cdp.send(tab.id, 'Runtime.evaluate', {
       expression, awaitPromise: true, returnByValue: true, userGesture: true, replMode, timeout: 15000,
     });
@@ -297,9 +297,9 @@ const HANDLERS = {
 const NO_TAB = new Set(['tabs_context', 'tabs_create', 'tabs_close', 'wait', 'run_task', 'stop_task']);
 
 /** Dialog news for the tab: alerts closed automatically, or a dialog still waiting for handle_dialog. */
-async function dialogNotes(name, args) {
+async function dialogNotes(name, args, lane) {
   if (NO_TAB.has(name) || !globalThis.chrome?.tabs) return '';
-  const tab = await page.resolveTab(args.tabId).catch(() => null);
+  const tab = await page.resolveTab(args.tabId, lane).catch(() => null);
   if (!tab) return '';
   const alerts = cdp.takeHandledAlerts(tab.id).map((m) => `\nThe page showed an alert (closed automatically): "${page.shorten(m, 300)}"`);
   const open = name === 'handle_dialog' ? null : cdp.openDialog(tab.id);
@@ -318,7 +318,7 @@ export async function executeTool(name, args, ctx) {
   } catch (e) {
     result = { isError: true, content: [{ type: 'text', text: e?.message || String(e) }] };
   }
-  const notes = await dialogNotes(name, args).catch(() => '');
+  const notes = await dialogNotes(name, args, ctx?.lane).catch(() => '');
   if (notes) {
     const last = [...result.content].reverse().find((c) => c.type === 'text');
     if (last && !last.text.includes(notes.trim())) last.text += notes;

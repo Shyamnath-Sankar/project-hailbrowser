@@ -778,7 +778,8 @@ function sendGoal() {
   if (running) {
     return toast(chatBusy() ? 'Still working on your last message.' : `Busy with ${running.mode === 'research' ? 'research' : running.mode === 'tasks' ? 'a long task' : 'another job'}. Stop it or wait for it to finish.`, 'error');
   }
-  send({ type: 'run', goal, mode: settings.mode, ...(use ? { use, depth: researchDepth } : {}) });
+  // The panel's window tells the worker which tab the user is looking at.
+  send({ type: 'run', goal, mode: settings.mode, windowId: myWindow, ...(use ? { use, depth: researchDepth } : {}) });
   input.value = '';
   setUse(null);
   autosize();

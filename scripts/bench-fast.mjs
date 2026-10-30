@@ -135,7 +135,7 @@ const TASKS = [
   { name: 'count-q', goal: 'Search the shop for blue lamp and tell me how many results there are', expect: 'blue lamp', answer: /\b7\b|seven/i,
     html: page('count-q', 'Lamp shop', `<h1>Lamp shop</h1><input id="q" aria-label="Search products"><div id="res"></div>`,
       `q.addEventListener('keydown',(e)=>{if(e.key==='Enter'){const v=q.value.trim().toLowerCase();res.innerHTML='<h2>7 results for '+v+'</h2>'+'<p>Lamp</p>'.repeat(7);ok(v)}})`) },
-  { name: 'missing-q', goal: 'What is the warranty period of the Sony WH-1000XM5?', answer: (a) => /not|no |doesn't|does not|isn't/i.test(a) && !/\d+\s*-?\s*(year|month)/i.test(a),
+  { name: 'missing-q', goal: 'According to this page, what is the warranty period of the Sony WH-1000XM5?', answer: (a) => /not|no |doesn't|does not|isn't/i.test(a) && !/\d+\s*-?\s*(year|month)/i.test(a),
     html: page('missing-q', 'Sony WH-1000XM5', `<h1>Sony WH-1000XM5</h1><p>Industry-leading noise cancelling, 30-hour battery, ₹26,990.</p>`) },
 ];
 const EXTRA = { 'newtab-article': page('newtab', 'Help article', `<h1>Help article</h1><p>Follow these steps, then confirm.</p><button id="cf">Confirm</button>`, `cf.onclick=()=>ok('confirmed')`) };
