@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "hailbrowser": {
+      "command": "node",
+      "args": ["mcp-server/src/index.js"]
+    }
+  }
+}
