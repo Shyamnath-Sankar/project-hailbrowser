@@ -412,3 +412,39 @@ test('phase 5: text to type is extracted from the goal only, right after a TYPE_
   assert.equal(calls[1].body.questions.value.source, 'goal');
   assert.deepEqual(calls[1].body.state, { goal });
 });
+
+test('chat: a text-only model that rejects screenshots gets them stripped and the run continues', async () => {
+  const { runNormal } = await import('../extension/src/agent/normal.js');
+  const settings = structuredClone(DEFAULTS);
+  settings.normal = { provider: 'custom', model: 'some-text-model', vision: true, maxSteps: 3 };
+  settings.providers.custom = { apiKey: '', baseUrl: 'https://llm.test/v1' };
+  let n = 0;
+  const bodies = [];
+  globalThis.fetch = async (url, init) => {
+    bodies.push(JSON.parse(init.body));
+    if (n++ === 0) return { ok: false, status: 400, text: async () => '{"error":{"message":"Image inputs are not supported for this model"}}' };
+    return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ message: { content: 'Done reading.' } }] }) };
+  };
+  const messages = [
+    { role: 'user', content: [{ type: 'text', text: 'look' }] },
+    { role: 'assistant', text: '', toolCalls: [{ id: 't1', name: 'screenshot', args: {} }] },
+    { role: 'tool', results: [{ id: 't1', name: 'screenshot', content: [{ type: 'image', data: 'AAA', mimeType: 'image/jpeg' }] }] },
+  ];
+  const events = [];
+  const r = await runNormal({ goal: 'what is on the page?', messages, settings, signal: new AbortController().signal, emit: (e) => events.push(e), tabId: 1 });
+  assert.equal(r.status, 'done');
+  assert.equal(bodies.length, 2);
+  assert.ok(!JSON.stringify(bodies[1]).includes('image_url'), 'no images in the retry');
+  assert.ok(!bodies[1].tools.some((t) => t.function.name === 'screenshot'), 'screenshot tool no longer offered');
+  assert.ok(events.some((e) => e.type === 'status' && /can't read screenshots/.test(e.text)));
+});
+
+test('loops: repeats, back-and-forth and idle waiting are recognised', async () => {
+  const { loopIn } = await import('../extension/src/agent/ultrafast.js');
+  const a = (kind, action, text = null, page_changed = true) => ({ kind, action, text, page_changed });
+  assert.equal(loopIn([a('click', 'Select Home', null, false), a('click', 'Select Home', null, false)])?.what, '"Select Home" twice with no effect');
+  assert.match(loopIn([a('fill', 'Todo', 'buy milk'), a('enter', 'Todo'), a('fill', 'Todo', 'buy milk'), a('enter', 'Todo')])?.what, /over and over/);
+  assert.match(loopIn([a('wait', 'Wait', null, false), a('wait', 'Wait', null, false), a('wait', 'Wait', null, false)])?.what, /waiting/);
+  assert.equal(loopIn([a('fill', 'Todo', 'buy milk'), a('enter', 'Todo'), a('fill', 'Todo', 'call mom'), a('enter', 'Todo')]), null, 'different values are progress');
+  assert.equal(loopIn([a('scroll', 'Scroll down'), a('scroll', 'Scroll down')]), null, 'scrolling further is progress');
+});

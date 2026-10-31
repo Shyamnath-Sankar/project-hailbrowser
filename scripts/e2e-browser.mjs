@@ -5,6 +5,7 @@
 //   npx puppeteer browsers install chrome   (once)
 //   node scripts/e2e-browser.mjs
 import http from 'node:http';
+import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer';
@@ -215,6 +216,8 @@ const browser = await puppeteer.launch({
 });
 let client;
 const step = (name) => console.log(`• ${name}`);
+// Screenshots for the docs and website leave out the transient notification pill.
+const hideToast = () => { const t = document.getElementById('toast'); if (t) t.hidden = true; };
 try {
   const swTarget = await browser.waitForTarget((t) => t.type() === 'service_worker' && t.url().endsWith('src/background.js'), { timeout: 15000 });
   const sw = await swTarget.worker();
@@ -243,6 +246,15 @@ try {
   step('MCP → extension connected (tabs_context)');
 
   const opened = await call('tabs_create', { url: base });
+  // Coding agents work in a window of their own: the user's window keeps its tabs and focus.
+  const placement = await sw.evaluate(async (id) => {
+    const tab = await chrome.tabs.get(id);
+    const { hailAgentWindow } = await chrome.storage.session.get('hailAgentWindow');
+    const windows = await chrome.windows.getAll();
+    return { inAgentWindow: tab.windowId === hailAgentWindow, windows: windows.length };
+  }, Number(/Tab (\d+)/.exec(opened.text)[1]));
+  assert.ok(placement.inAgentWindow && placement.windows >= 2, `agent tab should be in its own window: ${JSON.stringify(placement)}`);
+  step("agent's tab opened in its own window, not the user's");
   const page = await call('read_page');
   assert.match(page.text, /Fixture search/);
   const ref = (label) => new RegExp(`\\[(ref_\\d+)\\] \\w+ "${label}`).exec(page.text)[1];
@@ -372,6 +384,20 @@ try {
   await call('click', { ref: /\[(ref_\d+)\] checkbox "Nonstop/.exec(fresh.text)[1] });
   const shown = await until(overlay, 'the page overlay');
   assert.match(shown.label, /is using this tab/);
+  // The page as the user sees it while the agent works (docs and website image).
+  await new Promise((r) => setTimeout(r, 600)); // let the overlay finish fading in
+  const overlayShot = await sw.evaluate(async (id) => {
+    const t = await chrome.tabs.get(id);
+    // Only the window's active tab can be captured: bring the agent's tab forward, then restore.
+    const [was] = await chrome.tabs.query({ active: true, windowId: t.windowId });
+    await chrome.tabs.update(id, { active: true });
+    await new Promise((r) => setTimeout(r, 400));
+    const data = await chrome.tabs.captureVisibleTab(t.windowId, { format: 'png' }).catch((e) => `error: ${e.message}`);
+    if (was && was.id !== id) await chrome.tabs.update(was.id, { active: true });
+    return data;
+  }, agentTab);
+  if (overlayShot.startsWith('data:image/png;base64,')) fs.writeFileSync('docs/overlay.png', Buffer.from(overlayShot.split(',')[1], 'base64'));
+  else console.log(`  (overlay screenshot skipped: ${overlayShot})`);
   assert.ok(await groupOf(), 'the tab is in the HailBrowser group while the agent works');
   const quietFrom = Date.now();
   await until(async () => !(await overlay()) && !(await groupOf()) && await panel.$eval('#control', (e) => e.hidden), 'control to end after the agent went quiet');
@@ -427,9 +453,9 @@ try {
   assert.match((await call('get_page_text')).text, /Searched: Paris/);
   step(`run_task with values, no text model: ${withValues.text.split('\n')[0]}`);
   await new Promise((r) => setTimeout(r, 300));
-  await panel.screenshot({ path: 'docs/sidepanel.png' });
+  await panel.evaluate(hideToast); await panel.screenshot({ path: 'docs/sidepanel.png' });
   await panel.evaluate(() => document.querySelector('#open-settings').click());
-  await panel.screenshot({ path: 'docs/settings.png' });
+  await panel.evaluate(hideToast); await panel.screenshot({ path: 'docs/settings.png' });
   step('side panel screenshots saved to docs/');
 
   // Custom OpenAI-compatible endpoints need a Base URL right next to the provider choice.
@@ -446,7 +472,7 @@ try {
     if (i === 29) throw new Error(`Base URL not saved: ${saved}`);
     await new Promise((r) => setTimeout(r, 100));
   }
-  await panel.screenshot({ path: 'docs/settings.png' });
+  await panel.evaluate(hideToast); await panel.screenshot({ path: 'docs/settings.png' });
   step('Custom (OpenAI-compatible) shows a Base URL field and saves it');
 
   // ---- Long task (composer toggle in Chat): long-horizon run driven through the real side panel ----
@@ -477,7 +503,7 @@ try {
   await panel.waitForSelector('#feed .task-slot [data-answer]');
   assert.equal(await panel.$eval('[data-use="task"]', (b) => b.getAttribute('aria-pressed')), 'false', 'the toggle turns off after sending');
   assert.match(await panel.$$eval('#feed .msg.user', (e) => e.at(-1).textContent), /Long task/);
-  await panel.screenshot({ path: 'docs/tasks-ask.png' });
+  await panel.evaluate(hideToast); await panel.screenshot({ path: 'docs/tasks-ask.png' });
   step('Long task toggle: task card inline in the chat, planned 3 subtasks, finished lesson 1, paused to ask the user');
 
   // In a new chat the task card is gone, so the resume banner appears and opens it.
@@ -496,7 +522,7 @@ try {
   assert.match(finished.answer, /All 3 lessons are complete/, 'a finished task writes a real result, not a list of steps');
   await panel.waitForFunction(() => /All 3 lessons are complete/.test(document.querySelector('#detail .answer')?.textContent || ''));
   await new Promise((r) => setTimeout(r, 300));
-  await panel.screenshot({ path: 'docs/tasks.png' });
+  await panel.evaluate(hideToast); await panel.screenshot({ path: 'docs/tasks.png' });
   await panel.click('#detail [data-close]');
   step(`task finished: ${finished.subtasks.length}/${finished.subtasks.length} subtasks, ${finished.steps} steps, lessons ${[...completed].sort().join(',')} completed on the server`);
 
@@ -540,7 +566,7 @@ try {
   assert.equal(((await store('schedules:index')) || []).length, 0, 'nothing is scheduled before the user confirms');
   await panel.click('.proposal [data-accept="1"]');
   await panel.waitForFunction(() => /Scheduled ✓/.test(document.querySelector('.proposal').textContent));
-  await panel.screenshot({ path: 'docs/chat.png' });
+  await panel.evaluate(hideToast); await panel.screenshot({ path: 'docs/chat.png' });
   const [sched] = await waitFor(() => store('schedules:index'), 'schedule saved');
   const saved = await store(`schedules:${sched.id}`);
   assert.equal(saved.when.type, 'daily');
@@ -561,7 +587,7 @@ try {
   assert.equal(await sw.evaluate(() => chrome.tabs.query({}).then((t) => t.length)), tabsBefore, 'the job tab is closed after a successful run');
   await panel.waitForSelector('.run .pill.done');
   assert.equal((await store(`schedules:${sched.id}`)).nextRunAt, saved.nextRunAt, 'a manual run does not move the schedule');
-  await panel.screenshot({ path: 'docs/schedules.png' });
+  await panel.evaluate(hideToast); await panel.screenshot({ path: 'docs/schedules.png' });
   await panel.click('#schedules [data-close]');
   step(`"Run now" ran the job unattended in a background tab: ${runEntry.summary.split('\n')[0]}`);
 
@@ -583,7 +609,7 @@ try {
   assert.equal(await panel.$$eval('.answer .cite', (a) => a[0].getAttribute('href')), `http://localhost:${server.address().port}/src/1`);
   assert.equal(await sw.evaluate(() => chrome.tabs.query({}).then((t) => t.filter((x) => /\/src\/|\/search\?/.test(x.url)).length)), 0, 'research tabs are closed');
   await new Promise((r) => setTimeout(r, 200));
-  await panel.screenshot({ path: 'docs/research.png' });
+  await panel.evaluate(hideToast); await panel.screenshot({ path: 'docs/research.png' });
   step(`chat handed off to research: ${rep.queries.length} searches, ${rep.sources.length} sources read, cited report inline; tabs cleaned up`);
 
   await chatSend('What did the research find?');

@@ -63,14 +63,19 @@ async function newTabNotes(watch) {
 
 const HANDLERS = {
   async tabs_context(args, ctx) {
-    const current = await page.resolveTab(null, ctx?.lane).catch(() => null);
+    // Listing tabs must not open the agent window: report the agent's tab only if it has one.
+    const current = page.usesAgentWindow(ctx?.lane)
+      ? await (page.currentTab() != null ? chrome.tabs.get(page.currentTab()).catch(() => null) : null)
+      : await page.resolveTab(null, ctx?.lane).catch(() => null);
     const tabs = await chrome.tabs.query({ windowType: 'normal' });
     const lines = tabs.map((t) => `${t.id === current?.id ? '→' : ' '} [${t.id}] ${t.active ? '(active) ' : ''}${page.shorten(t.title || '(untitled)', 120)} — ${page.shorten(t.url || t.pendingUrl || '', 200)}`);
     return text(`Current agent tab: ${current ? current.id : 'none'}\n${lines.join('\n')}`);
   },
 
   async tabs_create({ url, activate }, ctx) {
-    const tab = await chrome.tabs.create({ url: 'about:blank', active: !!activate });
+    // Coding agents get the tab in their own window (when on); otherwise a background tab in the user's window.
+    const tab = page.usesAgentWindow(ctx?.lane) ? await page.createTab(ctx?.lane) : await chrome.tabs.create({ url: 'about:blank', active: !!activate });
+    if (activate && page.usesAgentWindow(ctx?.lane)) await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
     page.setCurrentTab(tab.id, { lane: ctx?.lane });
     if (url) await page.navigate(tab.id, url);
     return text(`Opened and selected ${await describeTab(await chrome.tabs.get(tab.id))}`);

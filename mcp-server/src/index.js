@@ -57,7 +57,9 @@ async function serve({ port }) {
   hub.start().catch((e) => log(`hub start failed: ${e.message}`));
   await server.connect(new StdioServerTransport());
   const shutdown = async () => { await hub.close().catch(() => {}); process.exit(0); };
+  // The agent went away: free the port (Windows pipes may report 'end' without 'close').
   process.stdin.on('close', shutdown);
+  process.stdin.on('end', shutdown);
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 }

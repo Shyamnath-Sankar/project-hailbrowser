@@ -19,7 +19,7 @@ function connectExtension(port) {
 }
 
 test('MCP client -> server -> extension round trip', async () => {
-  const port = 22316;
+  const port = 22316 + (process.pid % 500); // a leftover server from an interrupted run can't block this one
   const transport = new StdioClientTransport({ command: process.execPath, env: { ...process.env, HAILBROWSER_TRUST_FILE: TRUST_FILE }, args: ['mcp-server/src/index.js', '--port', String(port)], stderr: 'ignore' });
   const client = new Client({ name: 'e2e-test', version: '1.0.0' });
   await client.connect(transport);

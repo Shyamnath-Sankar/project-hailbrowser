@@ -8,6 +8,21 @@ import { NORMAL_SYSTEM } from './prompts.js';
 import { localNow } from './schedule.js';
 
 const KEEP_IMAGES = 2;
+// Models known to read text only: never offered the screenshot tool. Others are learned from their
+// "image inputs are not supported" error and remembered until the extension reloads.
+const isTextOnly = (model) => !/vision|[-_]vl\b/i.test(model) && /^(inception\/)?mercury|deepseek-chat|^llama|llama-3/i.test(model);
+const IMAGE_ERROR = /image|vision|multimodal/i;
+const textOnly = new Set();
+
+/** Replace every image part with a short note (the model can't read them). */
+export function stripImages(messages) {
+  for (const m of messages) {
+    const lists = m.role === 'tool' ? m.results.map((r) => r.content) : m.role === 'user' ? [m.content] : [];
+    for (const parts of lists) {
+      for (let j = 0; j < parts.length; j++) if (parts[j].type === 'image') parts[j] = { type: 'text', text: '[screenshot omitted: this model reads text only]' };
+    }
+  }
+}
 const KEEP_FULL_RESULTS = 12;
 
 function agentTools(settings) {
@@ -44,6 +59,8 @@ export function pruneContext(messages) {
 export async function runNormal({ goal, messages, settings, signal, emit, tabId, system = NORMAL_SYSTEM, extraTools = [], onExtraTool, maxSteps, onStep, lane = 'agent' }) {
   const cfg = providerConfig(settings, settings.normal.provider);
   const tools = [...agentTools(settings), ...extraTools];
+  const modelKey = `${settings.normal.provider}/${settings.normal.model}`;
+  const activeTools = () => (textOnly.has(modelKey) || isTextOnly(settings.normal.model) ? tools.filter((t) => t.name !== 'screenshot') : tools);
   const extraNames = new Set(extraTools.map((t) => t.name));
   const limit = maxSteps || settings.normal.maxSteps;
   const tab = await resolveTab(tabId, lane).catch(() => null);
@@ -61,7 +78,18 @@ export async function runNormal({ goal, messages, settings, signal, emit, tabId,
     pruneContext(messages);
     emit({ type: 'thinking' });
     const t0 = performance.now();
-    const reply = await chat({ cfg, model: settings.normal.model, system, messages, tools, signal });
+    let reply;
+    try {
+      reply = await chat({ cfg, model: settings.normal.model, system, messages, tools: activeTools(), signal });
+    } catch (e) {
+      // A text-only model (e.g. Mercury 2) rejects screenshots: drop them, stop offering the screenshot
+      // tool for this model, and retry once instead of failing the whole run.
+      if (!IMAGE_ERROR.test(e.message) || textOnly.has(modelKey)) throw e;
+      textOnly.add(modelKey);
+      stripImages(messages);
+      emit({ type: 'status', text: `${settings.normal.model} can't read screenshots, so I'm continuing with page text only.` });
+      reply = await chat({ cfg, model: settings.normal.model, system, messages, tools: activeTools(), signal });
+    }
     onStep?.();
     messages.push({ role: 'assistant', text: reply.text, toolCalls: reply.toolCalls });
     if (reply.text) {

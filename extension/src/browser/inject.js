@@ -90,11 +90,20 @@ export function pageSnapshot(opts) {
   };
   for (const e of document.querySelectorAll(selector)) {
     if (e.type === 'hidden' || e.type === 'file') continue;
-    if (e.matches(':disabled') || e.closest('[aria-disabled="true"]') || !visible(e)) continue;
+    // Styled checkboxes/radios hide the real input (opacity 0, or no size) behind a drawn label: an
+    // opacity-0 input with a size is still clickable; one without a size is reached through its label.
+    let proxy = null;
+    if (!visible(e) && (e.type === 'checkbox' || e.type === 'radio')) {
+      const sized = e.getClientRects().length && e.getBoundingClientRect().width > 0 && !e.closest('[aria-hidden="true"],[inert]') &&
+        (!e.checkVisibility || e.checkVisibility({ checkVisibilityCSS: true }));
+      if (!sized) proxy = [...(e.labels || [])].find((l) => visible(l)) || null;
+      if (!sized && !proxy) continue;
+    } else if (!visible(e)) continue;
+    if (e.matches(':disabled') || e.closest('[aria-disabled="true"]')) continue;
     const rname = role(e);
     if (!rname) continue;
     if (rname === 'gridcell' && e.querySelector('button,[role="button"]')) continue;
-    const r = e.getBoundingClientRect();
+    const r = (proxy || e).getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) continue;
     const cx = r.x + r.width / 2, cy = r.y + r.height / 2;
     const inViewport = cx >= 0 && cy >= 0 && cx < W && cy < Hh;
@@ -218,6 +227,14 @@ export function pageSnapshot(opts) {
 export function resolveNode(id) {
   const e = window.__hail?.nodes.get(id);
   if (!e || !e.isConnected) return { error: 'stale' };
+  // A hidden styled checkbox/radio is clicked through its label (a click on the label toggles it).
+  const sizeless = (x) => { const b = x.getBoundingClientRect(); return b.width <= 0 || b.height <= 0; };
+  const lab = (e.type === 'checkbox' || e.type === 'radio') && sizeless(e) ? [...(e.labels || [])].find((l) => !sizeless(l)) : null;
+  if (lab) {
+    lab.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    const b = lab.getBoundingClientRect();
+    return { x: Math.min(Math.max(b.left + Math.min(b.width / 2, 12), 1), innerWidth - 2), y: Math.min(Math.max(b.top + b.height / 2, 1), innerHeight - 2), tag: 'LABEL' };
+  }
   let r = e.getBoundingClientRect();
   if (r.bottom < 0 || r.top > innerHeight || r.right < 0 || r.left > innerWidth || r.top < 0 || r.bottom > innerHeight) {
     e.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
@@ -468,26 +485,26 @@ export function setIndicator(on, label) {
       :host{all:initial}
       .wrap{position:fixed;inset:0;animation:fade-in .35s ease-out both}
       .wrap.out{animation:fade-out .26s ease-in both}
-      .ring{position:fixed;inset:0;padding:3px;background:linear-gradient(100deg,#8b5cf6,#38bdf8,#f0abfc,#8b5cf6);background-size:300% 100%;
+      .ring{position:fixed;inset:0;padding:3px;background:linear-gradient(100deg,#c8f751,#14130f,#c8f751,#14130f,#c8f751);background-size:300% 100%;
         animation:flow 5s linear infinite;-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude}
-      .glow{position:fixed;inset:0;box-shadow:inset 0 0 44px 4px rgba(139,92,246,.30),inset 0 0 120px 10px rgba(56,189,248,.10);animation:breathe 2.6s ease-in-out infinite}
+      .glow{position:fixed;inset:0;box-shadow:inset 0 0 44px 4px rgba(200,247,81,.42),inset 0 0 120px 10px rgba(20,19,15,.06);animation:breathe 2.6s ease-in-out infinite}
       .pill{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);display:flex;align-items:center;gap:9px;padding:5px 5px 5px 7px;
-        border-radius:999px;font:600 12.5px/1.2 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#f5f3ff;white-space:nowrap;max-width:min(560px,92vw);
-        background:rgba(20,16,40,.94);border:1px solid rgba(167,139,250,.5);
-        box-shadow:0 10px 32px rgba(10,6,30,.45),0 0 0 4px rgba(139,92,246,.14);pointer-events:auto;animation:rise .45s cubic-bezier(.2,.9,.25,1.2) both}
-      .bolt{position:relative;flex:none;display:grid;place-items:center;width:22px;height:22px;border-radius:50%;background:linear-gradient(135deg,#8b5cf6,#38bdf8)}
-      .bolt svg{width:12px;height:12px;fill:#fff}
-      .bolt::after{content:"";position:absolute;inset:-3px;border-radius:50%;border:2px solid rgba(167,139,250,.7);animation:ping 1.6s cubic-bezier(0,0,.2,1) infinite}
+        border-radius:999px;font:500 12.5px/1.2 Switzer,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#f2efe8;white-space:nowrap;max-width:min(560px,92vw);
+        background:rgba(20,19,15,.95);border:1px solid rgba(200,247,81,.55);
+        box-shadow:0 10px 32px rgba(20,19,15,.35),0 0 0 4px rgba(200,247,81,.22);pointer-events:auto;animation:rise .45s cubic-bezier(.2,.9,.25,1.2) both}
+      .bolt{position:relative;flex:none;display:grid;place-items:center;width:22px;height:22px;border-radius:50%;background:#c8f751}
+      .bolt svg{width:12px;height:12px;fill:#1a2005}
+      .bolt::after{content:"";position:absolute;inset:-3px;border-radius:50%;border:2px solid rgba(200,247,81,.8);animation:ping 1.6s cubic-bezier(0,0,.2,1) infinite}
       .label{overflow:hidden;text-overflow:ellipsis;min-width:0}
       .dots{display:inline-flex;gap:3px;margin-right:2px}
-      .dots i{width:4px;height:4px;border-radius:50%;background:#c4b5fd;animation:blink 1.2s infinite}
+      .dots i{width:4px;height:4px;border-radius:50%;background:#c8f751;animation:blink 1.2s infinite}
       .dots i:nth-child(2){animation-delay:.2s}.dots i:nth-child(3){animation-delay:.4s}
       .stop{all:unset;cursor:pointer;flex:none;padding:6px 11px;border-radius:999px;background:rgba(255,255,255,.1);color:#fff;font:600 11.5px/1 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;transition:background .15s}
-      .stop:hover{background:#ef4444}.stop:focus-visible{outline:2px solid #c4b5fd;outline-offset:2px}
+      .stop:hover{background:#ef4444}.stop:focus-visible{outline:2px solid #c8f751;outline-offset:2px}
       .pill.stopping .stop{display:none}.pill.stopping .dots{display:none}
       .cursor{position:fixed;left:0;top:0;width:22px;height:22px;opacity:0;transform:translate(50vw,60vh);
         transition:transform .32s cubic-bezier(.2,.8,.2,1),opacity .25s}
-      .ripple{position:fixed;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;border:2px solid #a78bfa;background:rgba(167,139,250,.28);animation:ripple .65s ease-out forwards}
+      .ripple{position:fixed;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;border:2px solid #14130f;background:rgba(200,247,81,.55);animation:ripple .65s ease-out forwards}
       @keyframes flow{to{background-position:300% 0}}
       @keyframes breathe{50%{opacity:.5}}
       @keyframes blink{50%{opacity:.25}}
@@ -498,7 +515,7 @@ export function setIndicator(on, label) {
       @keyframes fade-out{to{opacity:0}}
       @media (prefers-reduced-motion:reduce){*,*::after{animation:none!important;transition:none!important}}
     </style><div class="wrap"><div class="ring"></div><div class="glow"></div>
-      <svg class="cursor" viewBox="0 0 24 24"><path d="M4 3l6.5 17.5 2.6-7.4L20.5 10.5z" fill="#8b5cf6" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>
+      <svg class="cursor" viewBox="0 0 24 24"><path d="M4 3l6.5 17.5 2.6-7.4L20.5 10.5z" fill="#c8f751" stroke="#14130f" stroke-width="1.6" stroke-linejoin="round"/></svg>
       <div class="pill" role="status"><span class="bolt"><svg viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg></span>
         <span class="label"></span><span class="dots"><i></i><i></i><i></i></span><button class="stop" title="Stop HailBrowser on this tab">Stop</button></div></div>`;
     host.__root = root;

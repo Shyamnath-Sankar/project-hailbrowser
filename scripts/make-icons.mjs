@@ -1,4 +1,4 @@
-// Render the HailBrowser icon (gradient tile + lightning bolt) to PNGs. No dependencies.
+// Render the HailBrowser icon (the website mark: ink tile + lime bolt) to PNGs. No dependencies.
 import { writeFileSync } from 'node:fs';
 import { deflateSync } from 'node:zlib';
 
@@ -15,8 +15,8 @@ function chunk(type, data) {
   return Buffer.concat([len, td, crc]);
 }
 
-// Bolt polygon in a 0..1 box.
-const BOLT = [[0.58, 0.12], [0.26, 0.56], [0.47, 0.56], [0.40, 0.88], [0.74, 0.42], [0.53, 0.42], [0.62, 0.12]];
+// Bolt polygon in a 0..1 box: the path of website/public/brand/mark.svg (32x32 viewBox).
+const BOLT = [[18.4, 4.2], [8.6, 18.1], [13.8, 18.1], [12.7, 27.8], [22.8, 13.6], [17.4, 13.6], [18.4, 4.2]].map(([x, y]) => [x / 32, y / 32]);
 const inside = (x, y, poly) => {
   let hit = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
@@ -29,7 +29,7 @@ const inside = (x, y, poly) => {
 function render(size) {
   const S = 4; // supersampling
   const rows = [];
-  const r = 0.22; // corner radius
+  const r = 0.25; // corner radius (rx 8 of 32)
   for (let py = 0; py < size; py++) {
     const row = [0];
     for (let px = 0; px < size; px++) {
@@ -38,9 +38,8 @@ function render(size) {
         const x = (px + (sx + 0.5) / S) / size, y = (py + (sy + 0.5) / S) / size;
         const dx = Math.max(r - x, 0, x - (1 - r)), dy = Math.max(r - y, 0, y - (1 - r));
         if (dx * dx + dy * dy > r * r) continue;
-        const t = (x + y) / 2; // gradient #3b6cff -> #8b5cf6
-        let c = [59 + (139 - 59) * t, 108 + (92 - 108) * t, 255 + (246 - 255) * t];
-        if (inside(x, y, BOLT)) c = [255, 255, 255];
+        let c = [20, 19, 15]; // ink #14130f
+        if (inside(x, y, BOLT)) c = [200, 247, 81]; // lime #c8f751
         R += c[0]; G += c[1]; B += c[2]; A += 255;
       }
       const n = S * S, a = A / n;

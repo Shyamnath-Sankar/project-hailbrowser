@@ -65,7 +65,7 @@ export const DEFAULTS = {
   research: { depth: 'standard', engine: 'duckduckgo', customUrl: '' },
   memory: { enabled: true },
   notifications: true,
-  bridge: { enabled: true, port: 12306 },
+  bridge: { enabled: true, port: 12306, ownWindow: true }, // ownWindow: coding agents work in their own Chrome window
   tools: { allowJavascript: true, showIndicator: true, groupTabs: true },
 };
 

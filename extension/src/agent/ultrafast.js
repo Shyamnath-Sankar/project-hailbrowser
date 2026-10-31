@@ -13,6 +13,22 @@ const OBSERVE = { viewportOnly: true, maxElements: 400, maxText: 6000 };
 const FRESHNESS = { ...OBSERVE, light: true }; // same elements and form values, no context/text extras
 const LOW_CONFIDENCE = 0.55; // below this the chat model takes the step
 const MAX_ESCALATIONS = 6;
+const MAX_LOOPS = 3; // circles noticed before the run stops as stuck (and the chat model takes over)
+
+const sig = (h) => `${h.kind}|${h.action}|${h.text ?? ''}`;
+/** A loop in the recent actions, or null: {what, at} (at = history length when it was seen). */
+export function loopIn(history) {
+  const h = history.filter((x) => x.kind !== 'check');
+  const n = h.length;
+  if (n >= 2 && sig(h[n - 1]) === sig(h[n - 2]) && h[n - 1].kind !== 'wait' && h[n - 1].kind !== 'scroll' && !h[n - 1].page_changed) {
+    return { what: `"${h[n - 1].action}" twice with no effect`, at: n };
+  }
+  if (n >= 4 && sig(h[n - 1]) === sig(h[n - 3]) && sig(h[n - 2]) === sig(h[n - 4]) && sig(h[n - 1]) !== sig(h[n - 2])) {
+    return { what: `"${h[n - 2].action}" then "${h[n - 1].action}" over and over`, at: n };
+  }
+  if (n >= 3 && h.slice(-3).every((x) => x.kind === 'wait' && !x.page_changed)) return { what: 'waiting while nothing changes', at: n };
+  return null;
+}
 // Goals limited to the current page never fall back to a web search.
 const LOCAL_SCOPE = /\b(this|current|the same) (page|site|tab|article)\b|\bon here\b|\bhere on\b/i;
 const ANSWER_TEXT = 12000; // characters of the final page given to the answer step
@@ -125,7 +141,7 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
   const sites = sitesFromGoal(task);
   // Rejected DONE claims, shown to the model as recent actions until the page changes.
   const checks = [];
-  let nudgedSubmit = false, rejectedDone = 0;
+  let nudgedSubmit = false, rejectedDone = 0, loops = 0, lastLoopAt = -1;
   let decisions = 0, stale = 0, pendingText = null, textCalls = 0;
   const t0 = performance.now();
   const elapsed = () => Math.round(performance.now() - t0);
@@ -153,6 +169,15 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
     }
     return null;
   };
+  // The DONE check judges the whole page (every field and up to 8k characters of text), not just the
+  // screen: on long pages (forms, results) most of the finished work is below the fold.
+  const wholePage = async (fallback) => {
+    try {
+      const all = await page.observe(tabId, { viewportOnly: false, maxElements: 400, maxText: 0 });
+      const text = await page.run(tabId, inj.pageText, 8000);
+      return { ...all, text: text?.text || fallback.text };
+    } catch { return fallback; }
+  };
   const finish = async (status, reason, snap, known) => {
     // A stuck question still gets an answer: often "the page doesn't say", which is the honest result.
     const answer = known !== undefined ? known : status !== 'stopped' ? await answerFor() : null;
@@ -162,7 +187,7 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
       (reason ? `\n${reason}` : '') + (snap ? `\nFinal page: ${snap.title} — ${snap.url}` : '') +
       (answer ? `\n\nAnswer:\n${answer.answer}` : '');
     emit({ type: 'finish', status, summary, answer: answer?.answer || null, answerFound: answer?.found ?? null });
-    return { status, summary, history, elapsedMs: elapsed(), finalUrl: snap?.url, finalTitle: snap?.title, answer: answer?.answer || null };
+    return { status, summary, history, elapsedMs: elapsed(), finalUrl: snap?.url, finalTitle: snap?.title, answer: answer?.answer || null, tabId, reason };
   };
 
   let snap = await page.observe(tabId, OBSERVE);
@@ -183,6 +208,16 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
     const notes = [omitted ? `[${omitted} more on-screen actions were not listed. Scroll to bring other parts of the page into view.]` : '', pageNotes(snap)].filter(Boolean).join('\n');
     const view = notes ? { ...snap, text: `${notes}\n${snap.text}` } : snap;
     const decisionGoal = goal;
+    // Going in circles is the main way Fast gets stuck: the same step again with no effect, an A/B/A/B
+    // back-and-forth, or waiting while nothing changes. Say so to the model and let the chat model decide.
+    const loop = loopIn(history);
+    if (loop && loop.at !== lastLoopAt) {
+      lastLoopAt = loop.at;
+      if (++loops > MAX_LOOPS) return finish('blocked', `It kept going in circles (${loop.what}).`, snap);
+      checks.push({ action: `You are going in circles: ${loop.what}. That did not work. Choose a different operation or element.`, kind: 'check', text: null, page_changed: false });
+      emit({ type: 'status', text: `Going in circles (${loop.what}); trying something else.` });
+      escalateNext = true;
+    }
     const seen = [...history, ...checks];
     let decision = await decide({ snap: view, actions, goal: decisionGoal, history: seen, settings, decisionCfg, signal });
     decisions++;
@@ -190,7 +225,7 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
     const stuck = history.length >= 2 && history.slice(-2).every((h) => h.page_changed === false && h.kind !== 'wait');
     const why = decision.choice === 'BLOCKED' ? 'it was about to give up'
       : decision.confidence != null && decision.confidence < LOW_CONFIDENCE ? 'it was unsure'
-        : stuck ? 'the last steps changed nothing' : escalateNext ? 'the last step needed help' : null;
+        : stuck ? 'the last steps changed nothing' : escalateNext ? (loop ? 'it was going in circles' : 'the last step needed help') : null;
     if (canEscalate && why && escalations < MAX_ESCALATIONS) {
       escalateNext = false;
       try {
@@ -216,7 +251,7 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
       if (decision.choice === 'DONE' && !nudgedSubmit) {
         // Typed text that was never submitted is the most common false finish: send it back once.
         const lastFill = history.map((h) => h.kind).lastIndexOf('fill');
-        if (lastFill >= 0 && !history.slice(lastFill + 1).some((h) => ['click', 'enter', 'key', 'open', 'back'].includes(h.kind))) {
+        if (lastFill >= 0 && !history.slice(lastFill + 1).some((h) => ['enter', 'key', 'open', 'back'].includes(h.kind) || (h.kind === 'click' && !['checkbox', 'radio', 'switch', 'combobox', 'textbox', 'searchbox', 'option'].includes(h.role)))) {
           nudgedSubmit = true;
           emit({ type: 'status', text: `Not finished yet: "${history[lastFill].action}" was typed but never submitted.` });
           checks.push({ action: `DONE was rejected: the text typed into "${history[lastFill].action}" was never submitted. CLICK its Search/Submit button or PRESS_ENTER in it.`, kind: 'check', text: null, page_changed: false });
@@ -232,7 +267,7 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
           // Go on looking only if the goal itself is also unfinished: a finished action whose page just
           // doesn't spell out the answer must not trigger more clicks (that can resubmit forms).
           const unfinished = ans && !ans.found && rejectedDone < 1 &&
-            !(await verifyDone({ snap: view, goal, history: [...history, ...checks], settings, decisionCfg, signal }).catch(() => ({ done: false }))).done;
+            !(await verifyDone({ snap: await wholePage(view), goal, history: [...history, ...checks], settings, decisionCfg, signal }).catch(() => ({ done: false }))).done;
           if (unfinished) {
             rejectedDone++;
             emit({ type: 'status', text: 'The answer is not on this page yet; looking further.' });
@@ -247,7 +282,7 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
         // DONE is a claim: ask once more whether every part of the goal is visibly met.
         // With a checklist, each requirement is checked on its own and the misses are named.
         await checklist.catch(() => []);
-        const check = await verifyDone({ snap: view, goal, history: [...history, ...checks], settings, decisionCfg, signal, requirements });
+        const check = await verifyDone({ snap: await wholePage(view), goal, history: [...history, ...checks], settings, decisionCfg, signal, requirements });
         decisions++;
         if (requirements.length && (check.met || check.done)) emit({ type: 'checklist', items: requirements, met: check.met || requirements.map(() => true) });
         if (!check.done) {
@@ -259,8 +294,8 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
           continue;
         }
       }
-      if (decision.choice === 'BLOCKED' && !sites.length && !LOCAL_SCOPE.test(task) && !history.some((h) => h.kind === 'search')) {
-        // Nothing here for the goal and no site named: search the web for it (the query is the user's
+      if (decision.choice === 'BLOCKED' && !sites.length && !LOCAL_SCOPE.test(task) && !history.length) {
+        // Nothing here for the goal before any step, and no site named: search the web for it (the query is the user's
         // own goal text, never page text) and carry on from the results, instead of giving up.
         emit({ type: 'status', text: 'Nothing for this on the current page: searching the web for your goal.' });
         await page.searchFromBlocked(tabId, task.slice(0, 300), `https://duckduckgo.com/?q=${encodeURIComponent(task.slice(0, 300))}`);
@@ -275,6 +310,11 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
     }
 
     let text = null;
+    if (action.kind === 'fill' && decision.textOptions?.length) {
+      // Several values for one field ("buy milk", "call mom"): the first one not typed into it yet.
+      const typed = new Set(history.filter((h) => h.kind === 'fill' && h.action === action.label).map((h) => h.text));
+      decision.text = decision.textOptions.find((t) => !typed.has(t)) ?? null;
+    }
     if (action.kind === 'fill') {
       const chosen = decision.text ? null
         : await chooseValue({ goal, action, snap, values, settings, decisionCfg, signal });
@@ -343,7 +383,7 @@ export async function runUltrafast({ goal: task, values = null, tabId, settings,
     stale = 0;
     pendingText = null;
     // Log execution before observing: a failed observation must not erase the action.
-    const entry = { step: history.length + 1, action: action.label, kind: action.kind, operation: decision.operation, text, page_changed: null, url: snap.url };
+    const entry = { step: history.length + 1, action: action.label, kind: action.kind, role: action.role ?? null, operation: decision.operation, text, page_changed: null, url: snap.url };
     history.push(entry);
     let next;
     try {

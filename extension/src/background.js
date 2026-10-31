@@ -1,7 +1,7 @@
 // Service worker: wires the side panel, the MCP bridge and the agents (chat, fast, tasks,
 // research, schedules) together, and owns all saved state (chats, tasks, reports, memory).
 import { Bridge } from './bridge.js';
-import { getSettings } from './settings.js';
+import { getSettings, providerConfig } from './settings.js';
 import { collection, uid } from './store.js';
 import { executeTool } from './tools/execute.js';
 import { runNormal } from './agent/normal.js';
@@ -194,6 +194,11 @@ const PANEL_DRIVERS = new Set(['Fast', 'Chat', 'Tasks', 'Scheduled', 'Scheduled 
 let lastAgentCall = { at: 0, who: null };
 
 /** The tab the user is looking at in the side panel's window (falls back to the last focused window). */
+/** True when the chat model can run (its provider is set up). */
+function chatModelReady(settings) {
+  try { providerConfig(settings, settings.normal.provider); return !!settings.normal.model; } catch { return false; }
+}
+
 async function userTab(windowId) {
   const [tab] = windowId != null
     ? await chrome.tabs.query({ active: true, windowId }).catch(() => [])
@@ -324,6 +329,7 @@ const bridge = new Bridge({
 async function applySettings() {
   const s = await getSettings();
   bridge.configure(s.bridge);
+  page.setAgentWindowMode(s.bridge.ownWindow !== false);
   cdp.setEffects(s.tools.showIndicator !== false);
   return s;
 }
@@ -460,6 +466,23 @@ async function startRun({ goal, mode, url, tabId, source, values, signal, who, w
     let result;
     if (mode === 'ultrafast') {
       result = await runUltrafast({ goal, values, tabId: tab.id, settings, signal: controller.signal, emit, lane });
+      // Stuck is never the end when a chat model is set up: it takes over on the same tab with every
+      // tool, told what Fast already did so it doesn't redo it (no duplicate forms or orders).
+      // A question Fast already answered ("the page doesn't say") is finished, not stuck.
+      if (result.status === 'blocked' && !result.answer && settings.ultrafast.handoff !== false && !controller.signal.aborted && chatModelReady(settings)) {
+        emit({ type: 'status', text: `Fast mode got stuck, so ${settings.normal.model} is taking over from here.` });
+        const done = (result.history || []).map((h) => `${h.step}. ${h.operation || h.kind} ${h.action}${h.text ? ` = "${h.text}"` : ''}`).join('\n');
+        const brief = `${withValues(goal, values)}\n\n[Fast mode already worked on this and stopped: ${result.reason || 'it got stuck'}.\n` +
+          `Its steps:\n${done || '(none)'}\nStart with read_page to see what is already done. Do NOT redo finished steps or create duplicates; ` +
+          'finish only what is missing, then say what the result is.]';
+        let system = NORMAL_SYSTEM;
+        if (source === 'schedule') system += `\n\n${UNATTENDED_RULES}`;
+        if (source !== 'mcp') system += memorySection(settings, tab.url);
+        const fast = result;
+        result = await runNormal({ goal: brief, messages: inChat ? chat.messages : [], settings, signal: controller.signal, emit, tabId: fast.tabId || tab.id, system, lane });
+        emit({ type: 'finish', status: result.status, summary: null });
+        result = { ...result, summary: `${result.summary}\n\n(Fast mode got stuck first: ${(fast.summary || '').split('\n')[0]})`, history: fast.history };
+      }
     } else {
       // External agents get no memory: it holds the user's personal facts.
       let system = NORMAL_SYSTEM;

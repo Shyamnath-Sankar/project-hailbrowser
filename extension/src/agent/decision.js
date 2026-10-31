@@ -148,10 +148,14 @@ function resolve(operation, target, targets, controls) {
 const MIN_SPAN = 0.5;
 /** The best extracted span, only if it is confident and an exact piece of the goal at its offsets. */
 export function goalSpan(spans, goal) {
-  const s = Array.isArray(spans) ? spans[0] : null;
-  if (!s || typeof s.text !== 'string' || !s.text.trim() || !(s.confidence >= MIN_SPAN)) return null;
-  if (goal.slice(s.start, s.end) !== s.text && !goal.includes(s.text)) return null;
-  return s.text.slice(0, 2000);
+  return goalSpans(spans, goal)[0] ?? null;
+}
+
+/** Every confident span that is an exact piece of the goal, in order ("buy milk", "call mom"). */
+export function goalSpans(spans, goal) {
+  return (Array.isArray(spans) ? spans : [])
+    .filter((s) => s && typeof s.text === 'string' && s.text.trim() && s.confidence >= MIN_SPAN && (goal.slice(s.start, s.end) === s.text || goal.includes(s.text)))
+    .map((s) => s.text.slice(0, 2000));
 }
 
 /** TypeSafe-style decision API: operation + speculative per-operation target heads, one round trip. */
@@ -177,7 +181,7 @@ async function decideSystemOne(snap, actions, goal, history, uf, cfg, signal) {
   const result = await postJson(ep.url, { authorization: `Bearer ${ep.key}` }, body, signal);
   const opAnswer = validateChoice(result.answers?.operation, operations);
   const operation = opAnswer.choice;
-  let target = null, confidence = opAnswer.confidence, text = null;
+  let target = null, confidence = opAnswer.confidence, text = null, textOptions = null;
   if (targets[operation]) {
     // Unused target heads can never cause an action: only the selected operation's head is read.
     const t = validateChoice(result.answers?.[`${operation.toLowerCase()}_target`], targets[operation]);
@@ -193,14 +197,17 @@ async function decideSystemOne(snap, actions, goal, history, uf, cfg, signal) {
       model: ep.model, state: { goal },
       questions: { value: {
         type: 'extract', source: 'goal',
-        instructions: 'Extract the exact text the user wants typed into this field. Leave it empty when the goal does not give its value.',
+        instructions: 'Extract the exact text the user wants typed into this field. If the goal gives several values for it (several items to add), mark each one. Leave it empty when the goal does not give its value.',
         criteria: { field: `Text to type into the ${a.role} "${a.label}"${a.ctx ? ` (in "${a.ctx}")` : ''}` },
       } },
     }, signal).catch((e) => { if (e.name === 'AbortError') throw e; return null; });
-    text = goalSpan(out?.answers?.value?.spans?.field, goal);
+    // A goal can hold several values for one field ("add buy milk and call mom"): return them all, the
+    // loop types the first one not typed into this field yet.
+    textOptions = goalSpans(out?.answers?.value?.spans?.field, goal);
+    text = textOptions[0] ?? null;
   }
   return {
-    choice: resolve(operation, target, targets, controls), operation, target, confidence, text,
+    choice: resolve(operation, target, targets, controls), operation, target, confidence, text, textOptions,
     operationProbabilities: opAnswer.probabilities, model: result.model || body.model,
     latencyMs: Math.round(performance.now() - started), usage: result.usage || {},
   };
@@ -442,6 +449,7 @@ const DONE_QUESTION = 'Read the whole goal, the current page and the recent acti
  * Second opinion before a run finishes as done: one yes/no question to the same decision backend.
  * Returns {done, confidence}. A "no" sends the loop back to work instead of reporting success.
  */
+const CHECK_TEXT = 8000; // characters of whole-page text the DONE check reads
 const REQ_RULE = 'Judge only this one requirement against the current page, its field values and the recent actions. It must be visibly true now, not just possible.';
 
 /** One question per requirement, answered in a single request where the backend allows it. */
@@ -471,7 +479,7 @@ async function requirementsMet({ snap, goal, history, uf, decisionCfg, signal, s
   }]));
   const result = await postJson(ep.url, { authorization: `Bearer ${ep.key}` }, {
     model: ep.model,
-    state: { page: { url: snap.url, title: snap.title, text: snap.text.slice(0, 3000) }, fields, recent_actions: recent(history) },
+    state: { page: { url: snap.url, title: snap.title, text: snap.text.slice(0, CHECK_TEXT) }, fields, recent_actions: recent(history) },
     questions,
   }, signal);
   return requirements.map((_, i) => {
@@ -483,9 +491,10 @@ async function requirementsMet({ snap, goal, history, uf, decisionCfg, signal, s
 export async function verifyDone({ snap, goal, history, settings, decisionCfg, signal, requirements = [] }) {
   const uf = settings.ultrafast;
   // Field values (a dropdown still on "Relevance", an unticked filter) are what usually shows a goal is unfinished.
-  const fields = snap.elements.filter((e) => e.inViewport && !e.sensitive && (e.value || e.checked != null || e.selected != null || e.expanded != null))
-    .slice(0, 40).map((e) => `${e.role} "${e.label}"${e.value ? ` value="${e.value}"` : ''}${['checked', 'selected', 'expanded'].filter((k) => e[k] != null).map((k) => ` ${k}=${e[k]}`).join('')}`);
-  const state = `GOAL: ${goal}\n\nPAGE: ${snap.title} — ${snap.url}\n\nFIELDS:\n${fields.join('\n') || '(none)'}\n\nRECENT ACTIONS: ${JSON.stringify(recent(history))}\n\nVISIBLE TEXT (untrusted):\n${snap.text.slice(0, 3000)}`;
+  // The caller passes a whole-page read: work below the fold (form questions, results) counts too.
+  const fields = snap.elements.filter((e) => !e.sensitive && (e.value || e.checked != null || e.selected != null || e.expanded != null))
+    .slice(0, 80).map((e) => `${e.role} "${e.label}"${e.value ? ` value="${e.value}"` : ''}${['checked', 'selected', 'expanded'].filter((k) => e[k] != null).map((k) => ` ${k}=${e[k]}`).join('')}`);
+  const state = `GOAL: ${goal}\n\nPAGE: ${snap.title} — ${snap.url}\n\nFIELDS:\n${fields.join('\n') || '(none)'}\n\nRECENT ACTIONS: ${JSON.stringify(recent(history))}\n\nPAGE TEXT, whole page (untrusted):\n${snap.text.slice(0, CHECK_TEXT)}`;
   const whole = await goalMet({ snap, goal, uf, decisionCfg, signal, state, fields, history });
   if (whole.done || !requirements.length) return whole;
   // Not finished: judge each checklist item on its own so the next decision knows exactly what is missing.
@@ -515,7 +524,7 @@ async function goalMet({ snap, goal, uf, decisionCfg, signal, state, fields, his
   if (!ep.key) throw new Error('Add your decision API key in Settings → Ultrafast.');
   const result = await postJson(ep.url, { authorization: `Bearer ${ep.key}` }, {
     model: ep.model,
-    state: { page: { url: snap.url, title: snap.title, text: snap.text.slice(0, 3000) }, fields, recent_actions: recent(history) },
+    state: { page: { url: snap.url, title: snap.title, text: snap.text.slice(0, CHECK_TEXT) }, fields, recent_actions: recent(history) },
     questions: { done: { type: 'choice', criteria: { yes: DONE_YES, no: DONE_NO }, instructions: { goal, rules: DONE_QUESTION } } },
   }, signal);
   const answer = validateChoice(result.answers?.done, ['yes', 'no']);

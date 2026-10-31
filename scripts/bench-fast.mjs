@@ -155,7 +155,9 @@ const base = `http://127.0.0.1:${server.address().port}`;
 
 const passed = (task, got) => got != null && (task.expect instanceof RegExp ? task.expect.test(got) : got.toLowerCase() === task.expect.toLowerCase());
 // Question tasks are scored on the answer run_task returns (text after "Answer:").
-const answerOf = (text) => /\n\nAnswer:\n([\s\S]*?)(\n\nSteps:|$)/.exec(text)?.[1]?.trim() ?? null;
+const answerOf = (text) => /\n\nAnswer:\n([\s\S]*?)(\n\nSteps:|\n\n\(Fast mode got stuck first|$)/.exec(text)?.[1]?.trim()
+  // After a chat-model takeover the reply itself is the answer.
+  ?? (/Fast mode got stuck first/.test(text) ? text.split('\n\n(Fast mode got stuck first')[0].trim() : null);
 const answered = (task, text) => { const a = answerOf(text); return a != null && (typeof task.answer === 'function' ? task.answer(a) : task.answer.test(a)); };
 
 // ---------- run ----------

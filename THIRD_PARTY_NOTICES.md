@@ -30,3 +30,8 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Fonts (extension/fonts)
+
+- **Switzer** by Indian Type Foundry, from Fontshare, used under the Fontshare (ITF) Free Font License.
+- **JetBrains Mono** by JetBrains, used under the SIL Open Font License 1.1.

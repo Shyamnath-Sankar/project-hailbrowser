@@ -36,6 +36,47 @@ export function isRestricted(url) {
 
 const ownPage = (t) => (t?.url || t?.pendingUrl || '').startsWith(`chrome-extension://${globalThis.chrome?.runtime?.id}/`);
 
+// Agent window: coding agents work in a Chrome window of their own (setting on by default), so they
+// never act in, focus or regroup the user's window. Explicit tab ids still reach any tab.
+let agentWindowMode = false;
+let agentWindowId = null;
+const agentWindowRestored = globalThis.chrome?.storage?.session
+  ? chrome.storage.session.get('hailAgentWindow').then(({ hailAgentWindow }) => { if (agentWindowId == null && hailAgentWindow != null) agentWindowId = hailAgentWindow; }).catch(() => {})
+  : Promise.resolve();
+
+export function setAgentWindowMode(on) {
+  agentWindowMode = !!on;
+}
+
+export function usesAgentWindow(lane) {
+  return agentWindowMode && (lane || 'agent') === 'agent';
+}
+
+/** The agent window (created in the background on first use, without taking focus). */
+export async function agentWindow() {
+  await agentWindowRestored;
+  if (agentWindowId != null) {
+    const win = await chrome.windows.get(agentWindowId).catch(() => null);
+    if (win) return win;
+  }
+  const win = await chrome.windows.create({ url: 'about:blank', focused: false, type: 'normal', width: 1280, height: 860 });
+  agentWindowId = win.id;
+  chrome.storage?.session?.set({ hailAgentWindow: win.id }).catch(() => {});
+  return win;
+}
+
+/** Open a tab for a lane: in the agent window for coding agents (when on), else in the user's window, in the background. */
+export async function createTab(lane, url = 'about:blank') {
+  if (usesAgentWindow(lane)) {
+    const win = await agentWindow();
+    // The window starts with a blank tab: reuse a blank one instead of leaving empty tabs behind.
+    const blank = (await chrome.tabs.query({ windowId: win.id }).catch(() => [])).find((t) => (t.url || t.pendingUrl || '') === 'about:blank');
+    if (blank) return chrome.tabs.update(blank.id, { url, active: true });
+    return chrome.tabs.create({ windowId: win.id, url, active: true });
+  }
+  return chrome.tabs.create({ url, active: false });
+}
+
 /** The tab to act on: explicit id, then the lane's current tab, then the active tab (never HailBrowser's own pages). */
 export async function resolveTab(tabId, lane = 'agent') {
   await restored;
@@ -48,6 +89,14 @@ export async function resolveTab(tabId, lane = 'agent') {
   if (current != null) {
     const tab = await chrome.tabs.get(current).catch(() => null);
     if (tab && !ownPage(tab)) return tab;
+  }
+  if (usesAgentWindow(lane)) {
+    // A coding agent with no tab yet gets one in its own window, never the tab the user is looking at.
+    const win = await agentWindow();
+    const [tab] = await chrome.tabs.query({ active: true, windowId: win.id });
+    const use = tab || await chrome.tabs.create({ windowId: win.id, url: 'about:blank', active: true });
+    setCurrentTab(use.id, { lane: 'agent' });
+    return use;
   }
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true, windowType: 'normal' });
   if (tab && !ownPage(tab)) return tab;
